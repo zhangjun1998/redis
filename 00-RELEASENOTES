@@ -1,6 +1,56 @@
 Redis Community Edition 8.0 release notes
 =========================================
 
+============================================================
+8.0-M02 (v7.9.225)    Committed Mon 28 Oct 2024 14:00:00 IST
+============================================================
+
+This is the second Milestone of Redis Community Edition 8.0.
+
+Milestones are non-feature-complete pre-releases. Pre-releases are not suitable for production use.
+Once we reach feature-completeness we will release RC1.
+
+### Headlines:
+
+8.0-M02 introduces significant performance improvements. Both Alpine and Debian Docker images are now available on [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
+
+### Supported upgrade paths (by replication or persistence) to 8.0-M02
+
+- From previous Redis versions, without modules
+
+The following upgrade paths (by replication or persistence) to 8.0-M02 are not yet tested and will be introduced in upcoming pre-releases:
+- From previous Redis versions with modules (RediSearch, RedisJSON, RedisTimeSeries, RedisBloom)
+- From Redis Stack 7.2 or 7.4
+
+### Security fixes
+
+- (CVE-2024-31449) Lua library commands may lead to stack overflow and potential RCE.
+- (CVE-2024-31227) Potential Denial-of-service due to malformed ACL selectors.
+- (CVE-2024-31228) Potential Denial-of-service due to unbounded pattern matching.
+
+### Bug fixes
+
+- #13539 Hash: Fix key ref for a hash that no longer has fields with expiration on `RENAME`/`MOVE`/`SWAPDB`/`RESTORE`
+- #13512 Fix `TOUCH` command from a script in no-touch mode
+- #13468 Cluster: Fix cluster node config corruption caused by mixing shard-id and non-shard-id versions
+- #13608 Cluster: Fix `GET #` option in `SORT` command
+
+### Modules API
+
+- #13526 Extend `RedisModule_OpenKey` to read also expired keys and subkeys
+
+### Performance and resource utilization improvements
+
+- #11884 Optimize `ZADD` and `ZRANGE*` commands
+- #13530 Optimize `SSCAN` command in case of listpack or intset encoding
+- #13531 Optimize `HSCAN`/`ZSCAN` command in case of listpack encoding
+- #13520 Optimize commands that heavily rely on bulk/mbulk replies (example of `LRANGE`)
+- #13566 Optimize `ZUNION[STORE]` by avoiding redundant temporary dict usage
+- #13567 Optimize `SUNION`/`SDIFF` commands by avoiding redundant temporary dict usage
+- #11533 Avoid redundant `lpGet` to boost `quicklistCompare`
+- #13412 Reduce redundant call of `prepareClientToWrite` when call `addReply*` continuously
+
+
 ===========================================================
 8.0-M01 (v7.9.224)    Released Thu 12 Sep 2024 10:00:00 IST
 ===========================================================
@@ -12,7 +62,7 @@ Once we reach feature-completeness we will release RC1.
 
 ### Headlines:
 
-Redis 8.0 introduces new data structures: JSON, time series, and 5 probabilistic data structures (previously available as separate Redis modules) and incorporates Redis scalable query engine (including vector search).
+Redis 8.0 introduces new data structures: JSON, time series, and 5 probabilistic data structures (previously available as separate Redis modules) and incorporates the enhanced Redis Query Enginer (with vector search).
 
 8.0-M01 is available as a Docker image and can be downloaded from [Docker Hub](https://hub.docker.com/_/redis). Additional distributions will be introduced in upcoming pre-releases.
 
@@ -28,7 +78,7 @@ The following upgrade paths (by replication or persistence) to 8.0-M01 are not y
 ### New Features in binary distributions
 
 - 7 new data structures: JSON, Time series, Bloom filter, Cuckoo filter, Count-min sketch, Top-k, t-digest
-- Redis scalable query engine (including vector search)
+- The enhanced Redis Query Engine (with vector search)
 
 ### Potentially breaking changes
 
