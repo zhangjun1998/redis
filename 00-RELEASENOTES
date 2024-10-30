@@ -12,7 +12,25 @@ SECURITY: There are security fixes in the release.
 --------------------------------------------------------------------------------
 
 
-Redis Community Edition 7.2.6    Released Wed 02 Oct 2024 20:17:04 IDT
+================================================================================
+Redis 7.2.7    Released Thu 16 May 2024 12:00:00 IST
+================================================================================
+
+Upgrade urgency MODERATE: Program an upgrade of the server, but it's not urgent.
+
+Bug fixes
+=========
+* #13311 Cluster: Fix crash due to unblocking client during slot migration
+* #13380 Fix possible crash due to OOM panic on invalid command
+* #13338 Fix incorrect lag field in `XINFO` when tombstone is after the `last_id` of the consume group
+* #13422 Cluster: Fix `CLUSTER SHARDS` command returns empty array
+* #13443 Cluster: Ensure validity of myself when loading cluster config
+* #13465 Cluster: Pass extensions to node if extension processing is handled by it
+* #13473 Fix incorrect lag due to trimming stream via `XTRIM` command
+
+
+================================================================================
+Redis 7.2.6    Released Wed 02 Oct 2024 20:17:04 IDT
 ================================================================================
 
 Upgrade urgency SECURITY: See security fixes below.
