@@ -435,20 +435,21 @@ typedef struct tls_connection {
     listNode *pending_list_node;
 } tls_connection;
 
-static connection *createTLSConnection(int client_side) {
+static connection *createTLSConnection(struct aeEventLoop *el, int client_side) {
     SSL_CTX *ctx = redis_tls_ctx;
     if (client_side && redis_tls_client_ctx)
         ctx = redis_tls_client_ctx;
     tls_connection *conn = zcalloc(sizeof(tls_connection));
     conn->c.type = &CT_TLS;
     conn->c.fd = -1;
+    conn->c.el = el;
     conn->c.iovcnt = IOV_MAX;
     conn->ssl = SSL_new(ctx);
     return (connection *) conn;
 }
 
-static connection *connCreateTLS(void) {
-    return createTLSConnection(1);
+static connection *connCreateTLS(struct aeEventLoop *el) {
+    return createTLSConnection(el, 1);
 }
 
 /* Fetch the latest OpenSSL error and store it in the connection */
@@ -468,10 +469,11 @@ static void updateTLSError(tls_connection *conn) {
  * Callers should use connGetState() and verify the created connection
  * is not in an error state.
  */
-static connection *connCreateAcceptedTLS(int fd, void *priv) {
+static connection *connCreateAcceptedTLS(struct aeEventLoop *el, int fd, void *priv) {
     int require_auth = *(int *)priv;
-    tls_connection *conn = (tls_connection *) createTLSConnection(0);
+    tls_connection *conn = (tls_connection *) createTLSConnection(el, 0);
     conn->c.fd = fd;
+    conn->c.el = el;
     conn->c.state = CONN_STATE_ACCEPTING;
 
     if (!conn->ssl) {
@@ -575,17 +577,17 @@ static int updateStateAfterSSLIO(tls_connection *conn, int ret_value, int update
 }
 
 static void registerSSLEvent(tls_connection *conn, WantIOType want) {
-    int mask = aeGetFileEvents(server.el, conn->c.fd);
+    int mask = aeGetFileEvents(conn->c.el, conn->c.fd);
 
     switch (want) {
         case WANT_READ:
-            if (mask & AE_WRITABLE) aeDeleteFileEvent(server.el, conn->c.fd, AE_WRITABLE);
-            if (!(mask & AE_READABLE)) aeCreateFileEvent(server.el, conn->c.fd, AE_READABLE,
+            if (mask & AE_WRITABLE) aeDeleteFileEvent(conn->c.el, conn->c.fd, AE_WRITABLE);
+            if (!(mask & AE_READABLE)) aeCreateFileEvent(conn->c.el, conn->c.fd, AE_READABLE,
                         tlsEventHandler, conn);
             break;
         case WANT_WRITE:
-            if (mask & AE_READABLE) aeDeleteFileEvent(server.el, conn->c.fd, AE_READABLE);
-            if (!(mask & AE_WRITABLE)) aeCreateFileEvent(server.el, conn->c.fd, AE_WRITABLE,
+            if (mask & AE_READABLE) aeDeleteFileEvent(conn->c.el, conn->c.fd, AE_READABLE);
+            if (!(mask & AE_WRITABLE)) aeCreateFileEvent(conn->c.el, conn->c.fd, AE_WRITABLE,
                         tlsEventHandler, conn);
             break;
         default:
@@ -595,19 +597,19 @@ static void registerSSLEvent(tls_connection *conn, WantIOType want) {
 }
 
 static void updateSSLEvent(tls_connection *conn) {
-    int mask = aeGetFileEvents(server.el, conn->c.fd);
+    int mask = aeGetFileEvents(conn->c.el, conn->c.fd);
     int need_read = conn->c.read_handler || (conn->flags & TLS_CONN_FLAG_WRITE_WANT_READ);
     int need_write = conn->c.write_handler || (conn->flags & TLS_CONN_FLAG_READ_WANT_WRITE);
 
     if (need_read && !(mask & AE_READABLE))
-        aeCreateFileEvent(server.el, conn->c.fd, AE_READABLE, tlsEventHandler, conn);
+        aeCreateFileEvent(conn->c.el, conn->c.fd, AE_READABLE, tlsEventHandler, conn);
     if (!need_read && (mask & AE_READABLE))
-        aeDeleteFileEvent(server.el, conn->c.fd, AE_READABLE);
+        aeDeleteFileEvent(conn->c.el, conn->c.fd, AE_READABLE);
 
     if (need_write && !(mask & AE_WRITABLE))
-        aeCreateFileEvent(server.el, conn->c.fd, AE_WRITABLE, tlsEventHandler, conn);
+        aeCreateFileEvent(conn->c.el, conn->c.fd, AE_WRITABLE, tlsEventHandler, conn);
     if (!need_write && (mask & AE_WRITABLE))
-        aeDeleteFileEvent(server.el, conn->c.fd, AE_WRITABLE);
+        aeDeleteFileEvent(conn->c.el, conn->c.fd, AE_WRITABLE);
 }
 
 static void tlsHandleEvent(tls_connection *conn, int mask) {
@@ -748,7 +750,6 @@ static void tlsAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) 
     int cport, cfd;
     int max = server.max_new_tls_conns_per_cycle;
     char cip[NET_IP_STR_LEN];
-    UNUSED(el);
     UNUSED(mask);
     UNUSED(privdata);
 
@@ -761,7 +762,7 @@ static void tlsAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) 
             return;
         }
         serverLog(LL_VERBOSE,"Accepted %s:%d", cip, cport);
-        acceptCommonHandler(connCreateAcceptedTLS(cfd, &server.tls_auth_clients),0,cip);
+        acceptCommonHandler(connCreateAcceptedTLS(el,cfd,&server.tls_auth_clients), 0, cip);
     }
 }
 
@@ -860,6 +861,13 @@ static int connTLSConnect(connection *conn_, const char *addr, int port, const c
     /* Return now, once the socket is connected we'll initiate
      * TLS connection from the event handler.
      */
+    return C_OK;
+}
+
+static int connTLSRebindEventLoop(connection *conn_, aeEventLoop *el) {
+    tls_connection *conn = (tls_connection *) conn_;
+    serverAssert(!conn->c.read_handler && !conn->c.write_handler);
+    conn->c.el = el;
     return C_OK;
 }
 
@@ -1113,6 +1121,9 @@ static ConnectionType CT_TLS = {
     .connect = connTLSConnect,
     .blocking_connect = connTLSBlockingConnect,
     .accept = connTLSAccept,
+
+    /* event loop */
+    .rebind_event_loop = connTLSRebindEventLoop,
 
     /* IO */
     .read = connTLSRead,

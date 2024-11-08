@@ -60,8 +60,8 @@ typedef struct ConnectionType {
     int (*listen)(connListener *listener);
 
     /* create/shutdown/close connection */
-    connection* (*conn_create)(void);
-    connection* (*conn_create_accepted)(int fd, void *priv);
+    connection* (*conn_create)(struct aeEventLoop *el);
+    connection* (*conn_create_accepted)(struct aeEventLoop *el, int fd, void *priv);
     void (*shutdown)(struct connection *conn);
     void (*close)(struct connection *conn);
 
@@ -69,6 +69,9 @@ typedef struct ConnectionType {
     int (*connect)(struct connection *conn, const char *addr, int port, const char *source_addr, ConnectionCallbackFunc connect_handler);
     int (*blocking_connect)(struct connection *conn, const char *addr, int port, long long timeout);
     int (*accept)(struct connection *conn, ConnectionCallbackFunc accept_handler);
+
+    /* event loop */
+    int (*rebind_event_loop)(struct connection *conn, aeEventLoop *el);
 
     /* IO */
     int (*write)(struct connection *conn, const void *data, size_t data_len);
@@ -98,6 +101,7 @@ struct connection {
     short int refs;
     unsigned short int iovcnt;
     void *private_data;
+    struct aeEventLoop *el;
     ConnectionCallbackFunc conn_handler;
     ConnectionCallbackFunc write_handler;
     ConnectionCallbackFunc read_handler;
@@ -160,6 +164,12 @@ static inline int connConnect(connection *conn, const char *addr, int port, cons
  */
 static inline int connBlockingConnect(connection *conn, const char *addr, int port, long long timeout) {
     return conn->type->blocking_connect(conn, addr, port, timeout);
+}
+
+/* Rebind the connection to another event loop, read/write handlers must not
+ * be installed in the current event loop */
+static inline int connRebindEventLoop(connection *conn, aeEventLoop *el) {
+    return conn->type->rebind_event_loop(conn, el);
 }
 
 /* Write to connection, behaves the same as write(2).
@@ -379,14 +389,14 @@ ConnectionType *connectionTypeUnix(void);
 int connectionIndexByType(const char *typename);
 
 /* Create a connection of specified type */
-static inline connection *connCreate(ConnectionType *ct) {
-    return ct->conn_create();
+static inline connection *connCreate(struct aeEventLoop *el, ConnectionType *ct) {
+    return ct->conn_create(el);
 }
 
 /* Create an accepted connection of specified type.
  * priv is connection type specified argument */
-static inline connection *connCreateAccepted(ConnectionType *ct, int fd, void *priv) {
-    return ct->conn_create_accepted(fd, priv);
+static inline connection *connCreateAccepted(struct aeEventLoop *el, ConnectionType *ct, int fd, void *priv) {
+    return ct->conn_create_accepted(el, fd, priv);
 }
 
 /* Configure a connection type. A typical case is to configure TLS.
