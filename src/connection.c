@@ -92,7 +92,14 @@ connection *connCreateSocket() {
  * is not in an error state (which is not possible for a socket connection,
  * but could but possible with other protocols).
  */
+/**
+ * 创建客户端connection，内部的ConnectionType为CT_Socket
+ *
+ * @param fd 客户端描述符
+ * @return
+ */
 connection *connCreateAcceptedSocket(int fd) {
+    // 创建connection，ConnectionType为CT_Socket
     connection *conn = connCreateSocket();
     conn->fd = fd;
     conn->state = CONN_STATE_ACCEPTING;
@@ -231,9 +238,18 @@ static int connSocketAccept(connection *conn, ConnectionCallbackFunc accept_hand
  * always called before and not after the read handler in a single event
  * loop.
  */
+/**
+ * 设置客户端cfd的AE_WRITABLE事件处理
+ *
+ * @param conn 客户端连接
+ * @param func 事件处理函数
+ * @param barrier
+ * @return
+ */
 static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc func, int barrier) {
     if (func == conn->write_handler) return C_OK;
 
+    // 设置conn的write事件处理函数
     conn->write_handler = func;
     if (barrier)
         conn->flags |= CONN_FLAG_WRITE_BARRIER;
@@ -242,6 +258,7 @@ static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc fu
     if (!conn->write_handler)
         aeDeleteFileEvent(server.el,conn->fd,AE_WRITABLE);
     else
+        // 为cfd注册AE_WRITABLE事件
         if (aeCreateFileEvent(server.el,conn->fd,AE_WRITABLE,
                     conn->type->ae_handler,conn) == AE_ERR) return C_ERR;
     return C_OK;
@@ -250,13 +267,22 @@ static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc fu
 /* Register a read handler, to be called when the connection is readable.
  * If NULL, the existing handler is removed.
  */
+/**
+ * 为clientFd注册AE_READABLE事件的回调函数，也就是readQueryFromClient()
+ *
+ * @param conn 客户端连接
+ * @param func AE_READABLE事件处理函数
+ * @return
+ */
 static int connSocketSetReadHandler(connection *conn, ConnectionCallbackFunc func) {
     if (func == conn->read_handler) return C_OK;
 
+    // 设置客户端的read_handler
     conn->read_handler = func;
     if (!conn->read_handler)
         aeDeleteFileEvent(server.el,conn->fd,AE_READABLE);
     else
+        // 为cfd注册AE_READABLE事件
         if (aeCreateFileEvent(server.el,conn->fd,
                     AE_READABLE,conn->type->ae_handler,conn) == AE_ERR) return C_ERR;
     return C_OK;
@@ -360,15 +386,19 @@ static int connSocketGetType(connection *conn) {
     return CONN_TYPE_SOCKET;
 }
 
+// 客户端连接类型，TCP => CT_Socket
 ConnectionType CT_Socket = {
     .ae_handler = connSocketEventHandler,
     .close = connSocketClose,
     .write = connSocketWrite,
     .writev = connSocketWritev,
     .read = connSocketRead,
+
     .accept = connSocketAccept,
     .connect = connSocketConnect,
+    // 设置cfd的writeHandler，会注册AE_WRITEABLE事件到cfd，并设置事件处理函数为connSocketSetWriteHandler
     .set_write_handler = connSocketSetWriteHandler,
+    // 设置cfd的readHandler，会注册AE_READABLE事件到cfd，并设置事件处理函数为connSocketSetReadHandler
     .set_read_handler = connSocketSetReadHandler,
     .get_last_error = connSocketGetLastError,
     .blocking_connect = connSocketBlockingConnect,

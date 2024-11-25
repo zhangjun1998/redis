@@ -1630,6 +1630,13 @@ cleanup:
     return ret;
 }
 
+
+/**
+ * aof文件加载
+ *
+ * @param am aof文件清单
+ * @return
+ */
 /* Load the AOF files according the aofManifest pointed by am. */
 int loadAppendOnlyFiles(aofManifest *am) {
     serverAssert(am != NULL);
@@ -1676,6 +1683,7 @@ int loadAppendOnlyFiles(aofManifest *am) {
     } else if (total_size == 0) {
         return AOF_EMPTY;
     }
+
 
     startLoading(total_size, RDBFLAGS_AOF_PREAMBLE, 0);
 

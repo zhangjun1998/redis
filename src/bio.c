@@ -170,6 +170,12 @@ void bioCreateFsyncJob(int fd) {
     bioSubmitJob(BIO_AOF_FSYNC, job);
 }
 
+/**
+ * BIO后台线程执行的任务
+ *
+ * @param arg
+ * @return
+ */
 void *bioProcessBackgroundJobs(void *arg) {
     bio_job *job;
     unsigned long type = (unsigned long) arg;

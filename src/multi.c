@@ -57,7 +57,7 @@ void freeClientMultiState(client *c) {
 }
 
 /* Add a new command into the MULTI commands queue */
-void queueMultiCommand(client *c, uint64_t cmd_flags) {
+void    queueMultiCommand(client *c, uint64_t cmd_flags) {
     multiCmd *mc;
 
     /* No sense to waste memory if the transaction is already aborted.

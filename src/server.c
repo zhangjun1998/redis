@@ -1198,19 +1198,31 @@ void cronUpdateMemoryStats() {
  * a macro is used: run_with_period(milliseconds) { .... }
  */
 
+/**
+ * 时间事件处理函数
+ * 死循环中执行该函数，然后由该函数驱动其它的定时任务
+ *
+ * @param eventLoop 事件驱动器
+ * @param id 时间事件id
+ * @param clientData 事件关联的数据
+ * @return
+ */
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     UNUSED(eventLoop);
     UNUSED(id);
     UNUSED(clientData);
 
+    // 发送看门狗信号，喂狗
     /* Software watchdog: deliver the SIGALRM that will reach the signal
      * handler if we don't return here fast enough. */
     if (server.watchdog_period) watchdogScheduleSignal(server.watchdog_period);
 
+    // 更新当前时间
     /* Update the time cache. */
     updateCachedTime(1);
 
+    // 定时任务执行频率
     server.hz = server.config_hz;
     /* Adapt the server.hz value to the number of configured clients. If we have
      * many clients, we want to call serverCron() with an higher frequency. */
@@ -1229,6 +1241,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     /* for debug purposes: skip actual cron work if pause_cron is on */
     if (server.pause_cron) return 1000/server.hz;
 
+    // 执行周期为100ms
     run_with_period(100) {
         long long stat_net_input_bytes, stat_net_output_bytes;
         long long stat_net_repl_input_bytes, stat_net_repl_output_bytes;
@@ -1237,11 +1250,15 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         atomicGet(server.stat_net_repl_input_bytes, stat_net_repl_input_bytes);
         atomicGet(server.stat_net_repl_output_bytes, stat_net_repl_output_bytes);
 
+        // 统计执行命令个数
         trackInstantaneousMetric(STATS_METRIC_COMMAND,server.stat_numcommands);
+        // 统计读流量
         trackInstantaneousMetric(STATS_METRIC_NET_INPUT,
                 stat_net_input_bytes + stat_net_repl_input_bytes);
+        // 统计写流量
         trackInstantaneousMetric(STATS_METRIC_NET_OUTPUT,
                 stat_net_output_bytes + stat_net_repl_output_bytes);
+        // 统计主从复制时的读写流量
         trackInstantaneousMetric(STATS_METRIC_NET_INPUT_REPLICATION,
                                  stat_net_repl_input_bytes);
         trackInstantaneousMetric(STATS_METRIC_NET_OUTPUT_REPLICATION,
@@ -1262,6 +1279,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
 
+    // 更新内存状态，如统计内存使用峰值
     cronUpdateMemoryStats();
 
     /* We received a SIGTERM or SIGINT, shutting down here in a safe way, as it is
@@ -1309,16 +1327,27 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
     /* We need to do a few operations on clients asynchronously. */
+    /**
+     * 针对client的定时任务
+     * 1.清理空闲时间超过上限的client
+     * 2.检查输入输出缓冲区过大的client，收缩缓冲区，释放内存
+     * 3.记录输入输出缓冲区内存使用峰值
+     */
     clientsCron();
 
     /* Handle background operations on Redis databases. */
+    /**
+     * 针对db的定时任务
+     * 1.清理过期key
+     * 2.对db进行resize
+     * 3.对db进行rehash
+     */
     databasesCron();
 
+    // AOF相关
     /* Start a scheduled AOF rewrite if this was requested by the user while
      * a BGSAVE was in progress. */
-    if (!hasActiveChildProcess() &&
-        server.aof_rewrite_scheduled &&
-        !aofRewriteLimited())
+    if (!hasActiveChildProcess() && server.aof_rewrite_scheduled && !aofRewriteLimited())
     {
         rewriteAppendOnlyFileBackground();
     }
@@ -1396,6 +1425,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     /* Clear the paused clients state if needed. */
     checkClientPauseTimeoutAndReturnIfPaused();
 
+    // 主从复制相关
     /* Replication cron function -- used to reconnect to master,
      * detect transfer failures, start background RDB transfers and so forth. 
      * 
@@ -1407,11 +1437,13 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         run_with_period(1000) replicationCron();
     }
 
+    // 集群相关
     /* Run the Redis Cluster cron. */
     run_with_period(100) {
         if (server.cluster_enabled) clusterCron();
     }
 
+    // 哨兵相关
     /* Run the Sentinel timer if we are in sentinel mode. */
     if (server.sentinel_mode) sentinelTimer();
 
@@ -1429,6 +1461,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
      * the operation even if completely idle. */
     if (server.tracking_clients) trackingLimitUsedSlots();
 
+    // RDB相关
     /* Start a scheduled BGSAVE if the corresponding flag is set. This is
      * useful when we are forced to postpone a BGSAVE because an AOF
      * rewrite is in progress.
@@ -2303,11 +2336,23 @@ void closeSocketListeners(socketFds *sfd) {
     sfd->count = 0;
 }
 
+
+/**
+ * 在ipfd上监听AE_READABLE事件的回调函数，用于接收客户端连接
+ *
+ * @param sfd ipfd(即serverFd)
+ * @param accept_handler 回调函数
+ * @return
+ */
 /* Create an event handler for accepting new connections in TCP or TLS domain sockets.
  * This works atomically for all socket fds */
 int createSocketAcceptHandler(socketFds *sfd, aeFileProc *accept_handler) {
     int j;
 
+    /*
+     * 为TCP监听的每个ipfd注册感兴趣的事件AE_READABLE，进入客户端连接时会触发该事件
+     * 设置accept_handler为AE_READABLE事件的回调函数，接收进入的客户端连接
+     */
     for (j = 0; j < sfd->count; j++) {
         if (aeCreateFileEvent(server.el, sfd->fd[j], AE_READABLE, accept_handler,NULL) == AE_ERR) {
             /* Rollback */
@@ -2336,6 +2381,13 @@ int createSocketAcceptHandler(socketFds *sfd, aeFileProc *accept_handler) {
  * impossible to bind, or no bind addresses were specified in the server
  * configuration but the function is not able to bind * for at least
  * one of the IPv4 or IPv6 protocols. */
+/**
+ * 端口监听
+ *
+ * @param port 端口
+ * @param sfd ipfd
+ * @return
+ */
 int listenToPort(int port, socketFds *sfd) {
     int j;
     char **bindaddr = server.bindaddr;
@@ -2343,14 +2395,17 @@ int listenToPort(int port, socketFds *sfd) {
     /* If we have no bind address, we don't listen on a TCP socket */
     if (server.bindaddr_count == 0) return C_OK;
 
+    // 对机器的所有地址依次监听
     for (j = 0; j < server.bindaddr_count; j++) {
         char* addr = bindaddr[j];
         int optional = *addr == '-';
         if (optional) addr++;
         if (strchr(addr,':')) {
+            // IPv6地址监听
             /* Bind IPv6 address. */
             sfd->fd[sfd->count] = anetTcp6Server(server.neterr,port,addr,server.tcp_backlog);
         } else {
+            // IPv4地址监听，将监听的fd赋值给sfd(即ipfd)
             /* Bind IPv4 address. */
             sfd->fd[sfd->count] = anetTcpServer(server.neterr,port,addr,server.tcp_backlog);
         }
@@ -2371,6 +2426,7 @@ int listenToPort(int port, socketFds *sfd) {
             return C_ERR;
         }
         if (server.socket_mark_id > 0) anetSetSockMarkId(NULL, sfd->fd[sfd->count], server.socket_mark_id);
+        // 确保为非阻塞连接
         anetNonBlock(NULL,sfd->fd[sfd->count]);
         anetCloexec(sfd->fd[sfd->count]);
         sfd->count++;
@@ -2445,19 +2501,25 @@ void makeThreadKillable(void) {
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 }
 
+/**
+ * 服务器初始化
+ */
 void initServer(void) {
     int j;
 
+    // 设置系统信号处理程序
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
     setupSignalHandlers();
     makeThreadKillable();
 
+    // 系统日志开关
     if (server.syslog_enabled) {
         openlog(server.syslog_ident, LOG_PID | LOG_NDELAY | LOG_NOWAIT,
             server.syslog_facility);
     }
 
+    // 初始化server参数
     /* Initialization after setting defaults from the config system. */
     server.aof_state = server.aof_enabled ? AOF_ON : AOF_OFF;
     server.hz = server.config_hz;
@@ -2505,10 +2567,17 @@ void initServer(void) {
         exit(1);
     }
 
+    // 一些共享的固定字符串初始化，比如常用的报错信息等
     createSharedObjects();
+    // 调整最大文件描述符数量
     adjustOpenFilesLimit();
     const char *clk_msg = monotonicInit();
     serverLog(LL_NOTICE, "monotonic clock: %s", clk_msg);
+    /*
+     * 创建事件处理器，实际是一个跨平台的事件驱动型网络框架
+     * 这一步实际上调用了不同平台的库函数进行create得到epfd，并封装到了eventLoop中
+     * 下面会通过eventLoop来向ipfd注册感兴趣的事件并且监听
+     */
     server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
     if (server.el == NULL) {
         serverLog(LL_WARNING,
@@ -2519,6 +2588,7 @@ void initServer(void) {
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
     /* Open the TCP listening socket for the user commands. */
+    // 监听TCP端口，拿到监听的fd赋值给server.ipfd，用于接收客户端连接、命令
     if (server.port != 0 &&
         listenToPort(server.port,&server.ipfd) == C_ERR) {
         /* Note: the following log text is matched by the test suite. */
@@ -2551,6 +2621,7 @@ void initServer(void) {
         exit(1);
     }
 
+    // 循环初始化所有db
     /* Create the Redis databases, and initialize other internal state. */
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&dbDictType);
@@ -2565,6 +2636,7 @@ void initServer(void) {
         server.db[j].slots_to_keys = NULL; /* Set by clusterInit later on if necessary. */
         listSetFreeMethod(server.db[j].defrag_later,(void (*)(void*))sdsfree);
     }
+    // 初始化LRU淘汰的key池子
     evictionPoolAlloc(); /* Initialize the LRU keys pool. */
     server.pubsub_channels = dictCreate(&keylistDictType);
     server.pubsub_patterns = dictCreate(&keylistDictType);
@@ -2624,6 +2696,10 @@ void initServer(void) {
     server.repl_good_slaves_count = 0;
     server.last_sig_received = 0;
 
+    /**
+     * 注册时间事件，用于执行定时任务等，事件处理函数为serverCron
+     * 事件事件是在死循环中每次执行epoll_wait()之后处理的，会遍历时间事件链表执行
+     */
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
@@ -2632,6 +2708,10 @@ void initServer(void) {
         exit(1);
     }
 
+    /**
+     * 在eventLoop中为serverFd注册READABLE事件，acceptTcpHandler作为回调函数处理客户端连接
+     * acceptTcpHandler会将客户端fd封装为connection，再将connection封装为client，并将readQueryFromClient()函数设置为客户端的命令处理函数
+     */
     /* Create an event handler for accepting new connections in TCP and Unix
      * domain sockets. */
     if (createSocketAcceptHandler(&server.ipfd, acceptTcpHandler) != C_OK) {
@@ -2640,18 +2720,26 @@ void initServer(void) {
     if (createSocketAcceptHandler(&server.tlsfd, acceptTLSHandler) != C_OK) {
         serverPanic("Unrecoverable error creating TLS socket accept handler.");
     }
+
+    // server.sofd默认-1
     if (server.sofd > 0 && aeCreateFileEvent(server.el,server.sofd,AE_READABLE,
         acceptUnixHandler,NULL) == AE_ERR) serverPanic("Unrecoverable error creating server.sofd file event.");
 
 
     /* Register a readable event for the pipe used to awake the event loop
      * from module threads. */
+    // 管道fd的处理器，用来处理主线程和子线程之间的事件
     if (aeCreateFileEvent(server.el, server.module_pipe[0], AE_READABLE,
         modulePipeReadable,NULL) == AE_ERR) {
             serverPanic(
                 "Error registering the readable event for the module pipe.");
     }
 
+    /**
+     * 设置eventLoop在beforeSleep和afterSleep时期执行的函数
+     * 这里的sleep是对于epoll来说的，陷入epoll前称为beforeSleep，执行完epoll后称为afterSleep
+     * 它们的逻辑相对比较复杂
+     */
     /* Register before and after sleep handlers (note this needs to be done
      * before loading persistence since it is used by processEventsWhileBlocked. */
     aeSetBeforeSleepProc(server.el,beforeSleep);
@@ -2661,23 +2749,30 @@ void initServer(void) {
      * no explicit limit in the user provided configuration we set a limit
      * at 3 GB using maxmemory with 'noeviction' policy'. This avoids
      * useless crashes of the Redis instance for out of memory. */
+    // 32位机器默认3G内存，且内存淘汰策略为noeviction
     if (server.arch_bits == 32 && server.maxmemory == 0) {
         serverLog(LL_WARNING,"Warning: 32 bit instance detected but no memory limit set. Setting 3 GB maxmemory limit with 'noeviction' policy now.");
         server.maxmemory = 3072LL*(1024*1024); /* 3 GB */
         server.maxmemory_policy = MAXMEMORY_NO_EVICTION;
     }
 
+    // 如果是集群模式，做一些初始化操作
     if (server.cluster_enabled) clusterInit();
+    // 初始化lua的执行环境
     scriptingInit(1);
     functionsInit();
+    // 初始化慢日志功能
     slowlogInit();
+    // 初始化延迟监控功能
     latencyMonitorInit();
 
     /* Initialize ACL default password if it exists */
     ACLUpdateDefaultUserPassword(server.requirepass);
 
+    // 看门狗，一个timer，防止程序跑飞
     applyWatchdogPeriod();
 
+    // 初始化数据结构，用于存储每个客户端的内存占用
     if (server.maxmemory_clients != 0)
         initServerClientMemUsageBuckets();
 }
@@ -2688,9 +2783,13 @@ void initServer(void) {
  * Thread Local Storage initialization collides with dlopen call.
  * see: https://sourceware.org/bugzilla/show_bug.cgi?id=19329 */
 void InitServerLast() {
+    // 创建用于执行bio队列任务的线程,默认3个线程
     bioInit();
+    // 创建IO线程，用于收发网络包
     initThreadedIO();
+    // 这个线程和内存分配有关
     set_jemalloc_bg_thread(server.jemalloc_bg_thread);
+    // 记录初始内存大小
     server.initial_memory_usage = zmalloc_used_memory();
 }
 
@@ -6584,13 +6683,16 @@ int checkForSentinelMode(int argc, char **argv, char *exec_name) {
 /* Function called at startup to load RDB or AOF file in memory. */
 void loadDataFromDisk(void) {
     long long start = ustime();
+    // aof功能开，优先从aof文件加载数据
     if (server.aof_state == AOF_ON) {
+        // 依次处理aof文件清单中的文件
         int ret = loadAppendOnlyFiles(server.aof_manifest);
         if (ret == AOF_FAILED || ret == AOF_OPEN_ERR)
             exit(1);
         if (ret != AOF_NOT_EXIST)
             serverLog(LL_NOTICE, "DB loaded from append only file: %.3f seconds", (float)(ustime()-start)/1000000);
     } else {
+        // aof关，从rdb文件加载数据
         rdbSaveInfo rsi = RDB_SAVE_INFO_INIT;
         int rsi_is_valid = 0;
         errno = 0; /* Prevent a stale value from affecting error checking */
@@ -6652,6 +6754,7 @@ void loadDataFromDisk(void) {
     }
 }
 
+// OOM回调函数，除了打印日志没有其它操作
 void redisOutOfMemoryHandler(size_t allocation_size) {
     serverLog(LL_WARNING,"Out Of Memory allocating %zu bytes!",
         allocation_size);
@@ -6853,7 +6956,17 @@ redisTestProc *getTestProcByName(const char *name) {
 }
 #endif
 
+
+/**
+ * 入口函数
+ *
+ * @param argc 参数数量
+ * @param argv 参数数组 如：/xxx/redis.server /xxx/redis.conf
+ * @return
+ */
 int main(int argc, char **argv) {
+    // =========================== 做一些初始化工作，配置读取和启动命令解析等 ===========================
+
     struct timeval tv;
     int j;
     char config_from_stdin = 0;
@@ -6902,8 +7015,12 @@ int main(int argc, char **argv) {
 #ifdef INIT_SETPROCTITLE_REPLACEMENT
     spt_init(argc, argv);
 #endif
+
+    // 时区设置
     setlocale(LC_COLLATE,"");
     tzset(); /* Populates 'timezone' global. */
+
+    // 设置内存分配错误时执行的回调函数
     zmalloc_set_oom_handler(redisOutOfMemoryHandler);
 
     /* To achieve entropy, in case of containers, their time() and getpid() can
@@ -6924,6 +7041,7 @@ int main(int argc, char **argv) {
     getRandomBytes(hashseed,sizeof(hashseed));
     dictSetHashFunctionSeed(hashseed);
 
+    // 可执行文件名称，默认redis-server
     char *exec_name = strrchr(argv[0], '/');
     if (exec_name == NULL) exec_name = argv[0];
     server.sentinel_mode = checkForSentinelMode(argc,argv, exec_name);
@@ -6936,6 +7054,7 @@ int main(int argc, char **argv) {
 
     /* Store the executable path and arguments in a safe place in order
      * to be able to restart the server later. */
+    // 可执行文件路径
     server.executable = getAbsolutePath(argv[0]);
     server.exec_argv = zmalloc(sizeof(char*)*(argc+1));
     server.exec_argv[argc] = NULL;
@@ -6944,11 +7063,13 @@ int main(int argc, char **argv) {
     /* We need to init sentinel right now as parsing the configuration file
      * in sentinel mode will have the effect of populating the sentinel
      * data structures with master nodes to monitor. */
+    // 如果是哨兵模式，需要做一些哨兵模式的初始化工作
     if (server.sentinel_mode) {
         initSentinelConfig();
         initSentinel();
     }
 
+    // 根据可执行文件名称判断是否执行AOF/RDB检查
     /* Check if we need to start in redis-check-rdb/aof mode. We just execute
      * the program main. However the program is part of the Redis executable
      * so that we can easily execute an RDB check on loading errors. */
@@ -6957,10 +7078,12 @@ int main(int argc, char **argv) {
     else if (strstr(exec_name,"redis-check-aof") != NULL)
         redis_check_aof_main(argc,argv);
 
+    // 解析启动参数，获取指定的配置文件等
     if (argc >= 2) {
         j = 1; /* First option to parse in argv[] */
         sds options = sdsempty();
 
+        // 对一些特殊指令的处理，比如redis-server -v等
         /* Handle special options --help and --version */
         if (strcmp(argv[1], "-v") == 0 ||
             strcmp(argv[1], "--version") == 0) version();
@@ -6978,12 +7101,15 @@ int main(int argc, char **argv) {
         } if (strcmp(argv[1], "--check-system") == 0) {
             exit(syscheck() ? 0 : 1);
         }
+
         /* Parse command line options
          * Precedence wise, File, stdin, explicit options -- last config is the one that matters.
          *
          * First argument is the config file name? */
+        // 获取参数中指定的配置文件路径
         if (argv[1][0] != '-') {
             /* Replace the config file in server.exec_argv with its absolute path. */
+            // 配置文件的绝对路径
             server.configfile = getAbsolutePath(argv[1]);
             zfree(server.exec_argv[1]);
             server.exec_argv[1] = zstrdup(server.configfile);
@@ -7066,15 +7192,20 @@ int main(int argc, char **argv) {
             j++;
         }
 
+        // 加载配置文件
         loadServerConfig(server.configfile, config_from_stdin, options);
         if (server.sentinel_mode) loadSentinelConfigFromQueue();
         sdsfree(options);
     }
     if (server.sentinel_mode) sentinelCheckConfigFile();
     server.supervised = redisIsSupervised(server.supervised_mode);
+    // 设置守护进程
     int background = server.daemonize && !server.supervised;
     if (background) daemonize();
+    // =========================== 初始化工作结束 ===========================
 
+
+    // =========================== 开始进入启动流程 ===========================
     serverLog(LL_WARNING, "oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo");
     serverLog(LL_WARNING,
         "Redis version=%s, bits=%d, commit=%s, modified=%d, pid=%d, just started",
@@ -7084,18 +7215,25 @@ int main(int argc, char **argv) {
             strtol(redisGitDirty(),NULL,10) > 0,
             (int)getpid());
 
+    // 没有指定配置文件，打印警告
     if (argc == 1) {
         serverLog(LL_WARNING, "Warning: no config file specified, using the default config. In order to specify a config file use %s /path/to/redis.conf", argv[0]);
     } else {
         serverLog(LL_WARNING, "Configuration loaded");
     }
 
+    // 服务器初始化，所需数据结构初始化、kv数据库初始化、网络框架初始化、资源状态等信息
     initServer();
+    // 将进程id写入文件
     if (background || server.pidfile) createPidFile();
+    // 重新设置进程名称，根据配置文件中的格式设置
     if (server.set_proc_title) redisSetProcTitle(NULL);
+    // 输出logo信息
     redisAsciiArt();
+    // 校验TCP的连接队列设置
     checkTcpBacklogSettings();
 
+    // 非哨兵模式下，做一些初始化工作，包括从磁盘加载AOF或RDB文件恢复数据
     if (!server.sentinel_mode) {
         /* Things not needed when running in Sentinel mode. */
         serverLog(LL_WARNING,"Server initialized");
@@ -7126,10 +7264,15 @@ int main(int argc, char **argv) {
         moduleInitModulesSystemLast();
         moduleLoadFromQueue();
         ACLLoadUsersAtStartup();
+        // server初始化的一些后续操作，包括一些后台线程的创建，BioJob任务线程，IO线程等
         InitServerLast();
+        // 加载aof配置清单，可能会存在基础aof、增量aof、历史aof等多个aof文件，通过清单管理
         aofLoadManifestFromDisk();
+        // 从磁盘的aof/rdb文件中加载数据到内存
         loadDataFromDisk();
+        // 尝试打开aof功能
         aofOpenIfNeededOnServerStart();
+        // 删除aof历史文件
         aofDelHistoryFiles();
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == C_ERR) {
@@ -7139,6 +7282,7 @@ int main(int argc, char **argv) {
                 exit(1);
             }
         }
+        // 准备工作完成，等待接收客户端连接
         if (server.ipfd.count > 0 || server.tlsfd.count > 0)
             serverLog(LL_NOTICE,"Ready to accept connections");
         if (server.sofd > 0)
@@ -7166,10 +7310,19 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
 
+    // 设置主线程的CPU亲和性
     redisSetCpuAffinity(server.server_cpulist);
     setOOMScoreAdj(-1);
 
+    /**
+     * 死循环处理事件驱动器上的事件
+     * 注意这里死循环却不大量消耗CPU的实现：
+     * epoll_wait()可以设置timeout，因此每次循环进入epoll_wait()时会阻塞，直到timeout的到来
+     * 为了防止一些时间事件得不到及时执行，这个timeout设置的是距离最近一个时间事件的间隔
+     * 因此既保证了不会出现CPU忙等待的问题，也解决了定时任务得不到及时执行的问题
+     */
     aeMain(server.el);
+    // 到这里说明主线程运行终止，做一些清理操作后退出程序
     aeDeleteEventLoop(server.el);
     return 0;
 }

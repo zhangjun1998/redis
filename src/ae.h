@@ -68,43 +68,46 @@ typedef int aeTimeProc(struct aeEventLoop *eventLoop, long long id, void *client
 typedef void aeEventFinalizerProc(struct aeEventLoop *eventLoop, void *clientData);
 typedef void aeBeforeSleepProc(struct aeEventLoop *eventLoop);
 
+// 文件类型事件
 /* File event structure */
 typedef struct aeFileEvent {
-    int mask; /* one of AE_(READABLE|WRITABLE|BARRIER) */
-    aeFileProc *rfileProc;
-    aeFileProc *wfileProc;
-    void *clientData;
+    int mask; // 事件类型，AE_READABLE、AE_WRITABLE、AE_BARRIER /* one of AE_(READABLE|WRITABLE|BARRIER) */
+    aeFileProc *rfileProc; // 读事件的处理函数
+    aeFileProc *wfileProc; // 写事件的处理函数
+    void *clientData; // 事件关联的数据
 } aeFileEvent;
 
+// 时间类型事件，每个事件作为链表上的一个节点
 /* Time event structure */
 typedef struct aeTimeEvent {
-    long long id; /* time event identifier. */
+    long long id; // 事件id /* time event identifier. */
     monotime when;
-    aeTimeProc *timeProc;
-    aeEventFinalizerProc *finalizerProc;
-    void *clientData;
-    struct aeTimeEvent *prev;
-    struct aeTimeEvent *next;
-    int refcount; /* refcount to prevent timer events from being
-  		   * freed in recursive time event calls. */
+    aeTimeProc *timeProc; // 该事件的处理函数
+    aeEventFinalizerProc *finalizerProc; // 析构函数
+    void *clientData; // 事件关联的数据
+    struct aeTimeEvent *prev; // 链表中的上一个事件
+    struct aeTimeEvent *next; // 链表中的下一个事件
+    int refcount; // 引用计数 /* refcount to prevent timer events from being freed in recursive time event calls. */
 } aeTimeEvent;
 
+// 触发的事件
 /* A fired event */
 typedef struct aeFiredEvent {
-    int fd;
-    int mask;
+    int fd; // 事件关联的fd
+    int mask; // 事件类型
 } aeFiredEvent;
 
+// 基于事件驱动的处理器
 /* State of an event based program */
 typedef struct aeEventLoop {
-    int maxfd;   /* highest file descriptor currently registered */
-    int setsize; /* max number of file descriptors tracked */
-    long long timeEventNextId;
-    aeFileEvent *events; /* Registered events */
-    aeFiredEvent *fired; /* Fired events */
-    aeTimeEvent *timeEventHead;
-    int stop;
-    void *apidata; /* This is used for polling API specific data */
+    int maxfd;   // 当前注册的最大描述符id，初始为-1 /* highest file descriptor currently registered */
+    int setsize; // 允许的最大描述符数量 /* max number of file descriptors tracked */
+    long long timeEventNextId; // 时间事件的下一个触发id
+    aeFileEvent *events; // 注册的事件集合，数组结构，使用fd作为数组下标即可获取到对应fd的事件 /* Registered events */
+    aeFiredEvent *fired; // 触发的事件集合，注意这个数组下标和fd没有关系，需要遍历拿到event /* Fired events */
+    aeTimeEvent *timeEventHead; // 时间事件链表头节点，链表结构
+    int stop; // 停止监听标志，默认0否 1是
+    void *apidata; // 对实际使用的操作系统和硬件平台库函数的封装引用 /* This is used for polling API specific data */
     aeBeforeSleepProc *beforesleep;
     aeBeforeSleepProc *aftersleep;
     int flags;

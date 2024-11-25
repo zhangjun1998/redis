@@ -117,6 +117,11 @@ int authRequired(client *c) {
     return auth_required;
 }
 
+/**
+ * 客户端连接 -> 创建客户端，客户端fd注册到eventLoop并注册事件
+ * @param conn
+ * @return
+ */
 client *createClient(connection *conn) {
     client *c = zmalloc(sizeof(client));
 
@@ -125,16 +130,23 @@ client *createClient(connection *conn) {
      * in the context of a client. When commands are executed in other
      * contexts (for instance a Lua script) we need a non connected client. */
     if (conn) {
+        // 为客户端连接设置一些TCP参数，KEEP_ALIVE、NO_DELAY
         connEnableTcpNoDelay(conn);
         if (server.tcpkeepalive)
             connKeepAlive(conn,server.tcpkeepalive);
+        /*
+         * 设置客户端的read_handler为readQueryFromClient()
+         * 该函数用于处理后续客户端发送的命令
+         * 实际这里调用的是 set_read_handler函数，会向eventLoop注册客户端fd和AE_READABLE事件
+         */
         connSetReadHandler(conn, readQueryFromClient);
         connSetPrivateData(conn, c);
     }
+    // 为客户端分配16k的缓冲区
     c->buf = zmalloc_usable(PROTO_REPLY_CHUNK_BYTES, &c->buf_usable_size);
-    selectDb(c,0);
+    selectDb(c,0); // 默认选择数据库0
     uint64_t client_id;
-    atomicGetIncr(server.next_client_id, client_id, 1);
+    atomicGetIncr(server.next_client_id, client_id, 1); // 递增方式分配客户端id
     c->id = client_id;
     c->resp = 2;
     c->conn = conn;
@@ -1284,6 +1296,15 @@ void clientAcceptHandler(connection *conn) {
 }
 
 #define MAX_ACCEPTS_PER_CALL 1000
+
+ /**
+  * 对接收到客户端连接的后续处理
+  * 创建client、注册cfd到eventLoop、注册AE_READABLE事件即事件处理函数readQueryFromClient()
+  *
+  * @param conn 客户端连接
+  * @param flags 事件类型
+  * @param ip 客户端ip
+  */
 static void acceptCommonHandler(connection *conn, int flags, char *ip) {
     client *c;
     char conninfo[100];
@@ -1298,6 +1319,7 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
         return;
     }
 
+    // 限制最大客户端连接数
     /* Limit the number of connections we take at the same time.
      *
      * Admission control will happen before a client is created and connAccept()
@@ -1324,6 +1346,7 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
         return;
     }
 
+    // createClient会根据客户端连接创建对应client，将客户端fd注册到eventLoop并注册事件，设置相应函数来处理客户端发送的命令
     /* Create connection and client */
     if ((c = createClient(conn)) == NULL) {
         serverLog(LL_WARNING,
@@ -1345,6 +1368,7 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
      *
      * Because of that, we must do nothing else afterwards.
      */
+    // 设置accept的回调函数
     if (connAccept(conn, clientAcceptHandler) == C_ERR) {
         char conninfo[100];
         if (connGetState(conn) == CONN_STATE_ERROR)
@@ -1356,6 +1380,17 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
     }
 }
 
+/**
+ * ipfd的AE_READABLE事件回调函数，用于接收客户端连接
+ * 当AE_READABLE事件发生时，事件驱动器调用该函数
+ * 函数内部会调用accept()库函数接收客户端连接，
+ * 获取到客户端fd后，会使用eventLoop在客户端fd上注册事件，用于处理客户端的请求响应
+ *
+ * @param el 事件驱动器
+ * @param fd ipfd
+ * @param privdata
+ * @param mask 事件类型 AE_READABLE、AE_WRITABLE
+ */
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
     char cip[NET_IP_STR_LEN];
@@ -1363,7 +1398,13 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(mask);
     UNUSED(privdata);
 
+    /*
+     * serverFd触发AE_READABLE事件，处理进入的客户端连接
+     * 单次事件的处理过程中不得接收超过max个连接
+     * 事件触发不代表只处理一个连接，会批量处理serverFd上所有产生了该事件的连接，事件驱动
+     */
     while(max--) {
+        // 内部调用accept()库函数，接收客户端连接，返回客户端fd
         cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport);
         if (cfd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
@@ -1372,6 +1413,9 @@ void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             return;
         }
         serverLog(LL_VERBOSE,"Accepted %s:%d", cip, cport);
+        // 对客户端连接的后续处理，将客户端fd封装为connection，ConnectionType为CT_Socket
+        // 再将connection封装为client
+        // 这一步会设置client的命令处理函数，readQueryFromClient，用于处理客户端发送的命令
         acceptCommonHandler(connCreateAcceptedSocket(cfd),0,cip);
     }
 }
@@ -2616,7 +2660,13 @@ int processInputBuffer(client *c) {
     return C_OK;
 }
 
+/**
+ * 客户端命令处理函数
+ *
+ * @param conn 客户端连接
+ */
 void readQueryFromClient(connection *conn) {
+    // 通过conn拿到客户端信息
     client *c = connGetPrivateData(conn);
     int nread, big_arg = 0;
     size_t qblen, readlen;
@@ -4120,6 +4170,7 @@ void initThreadedIO(void) {
     /* Indicate that io-threads are currently idle */
     io_threads_op = IO_THREADS_OP_IDLE;
 
+    // 配置为单线程模式，不使用后台线程处理IO
     /* Don't spawn any thread if the user selected a single thread:
      * we'll handle I/O directly from the main thread. */
     if (server.io_threads_num == 1) return;

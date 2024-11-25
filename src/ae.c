@@ -64,6 +64,13 @@
 #endif
 
 
+/**
+ * 创建事件处理器
+ * 实现跨平台的事件驱动型网络框架
+ *
+ * @param setsize 最大fd数量
+ * @return
+ */
 aeEventLoop *aeCreateEventLoop(int setsize) {
     aeEventLoop *eventLoop;
     int i;
@@ -82,7 +89,16 @@ aeEventLoop *aeCreateEventLoop(int setsize) {
     eventLoop->beforesleep = NULL;
     eventLoop->aftersleep = NULL;
     eventLoop->flags = 0;
+
+    /*
+     * 根据不同操作系统和硬件平台创建fd
+     * 构建期间会通过判断宏定义的方式决定使用哪个库来实际创建fd
+     * 实际上eventLoop相当于一个跨平台的网络框架，对外提供API，屏蔽各平台底层实现差异
+     * 我现在是用M1芯片版本的MacBookPro编译源码的，所以使用的是kqueue而非epoll，epoll的实现封装在ae_epoll.c
+     */
     if (aeApiCreate(eventLoop) == -1) goto err;
+
+    // 初始化将所有事件设置为AE_NONE
     /* Events with mask == AE_NONE are not set. So let's initialize the
      * vector with it. */
     for (i = 0; i < setsize; i++)
@@ -155,6 +171,16 @@ void aeStop(aeEventLoop *eventLoop) {
     eventLoop->stop = 1;
 }
 
+/**
+ * 调用底层库函数为fd注册事件
+ *
+ * @param eventLoop 事件驱动框架
+ * @param fd 描述符
+ * @param mask 事件类型
+ * @param proc 回调函数
+ * @param clientData
+ * @return 注册结果
+ */
 int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         aeFileProc *proc, void *clientData)
 {
@@ -162,14 +188,20 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
         errno = ERANGE;
         return AE_ERR;
     }
+    // 该fd对应的事件，在events数组中的下标即为fd
     aeFileEvent *fe = &eventLoop->events[fd];
 
+    // 为fd注册感兴趣的事件
     if (aeApiAddEvent(eventLoop, fd, mask) == -1)
         return AE_ERR;
+    // 设置事件类型
     fe->mask |= mask;
+    // 设置事件的处理函数
     if (mask & AE_READABLE) fe->rfileProc = proc;
     if (mask & AE_WRITABLE) fe->wfileProc = proc;
+    // 事件的关联数据
     fe->clientData = clientData;
+    // 更新maxfd
     if (fd > eventLoop->maxfd)
         eventLoop->maxfd = fd;
     return AE_OK;
@@ -272,6 +304,7 @@ static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {
     return (now >= earliest->when) ? 0 : earliest->when - now;
 }
 
+// 处理时间事件
 /* Process time events */
 static int processTimeEvents(aeEventLoop *eventLoop) {
     int processed = 0;
@@ -284,6 +317,7 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
     while(te) {
         long long id;
 
+        // 需要移除的事件
         /* Remove events scheduled for deletion. */
         if (te->id == AE_DELETED_EVENT_ID) {
             aeTimeEvent *next = te->next;
@@ -314,23 +348,28 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
          * add new timers on the head, however if we change the implementation
          * detail, this check may be useful again: we keep it here for future
          * defense. */
+        // 好像是防止在本次处理期间新增的时间事件在本次遍历中被处理，不过已经将新增的事件放在链表头了，不会遍历到
         if (te->id > maxId) {
             te = te->next;
             continue;
         }
 
+        // 触发时间到达，执行
         if (te->when <= now) {
             int retval;
 
             id = te->id;
             te->refcount++;
+            // 执行时间事件处理函数
             retval = te->timeProc(eventLoop, id, te->clientData);
             te->refcount--;
             processed++;
             now = getMonotonicUs();
+            // 需要继续执行，设置下次触发时间
             if (retval != AE_NOMORE) {
                 te->when = now + retval * 1000;
             } else {
+                // 不再执行，设置id为-1，下次会被删除
                 te->id = AE_DELETED_EVENT_ID;
             }
         }
@@ -354,24 +393,37 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
  * if flags has AE_CALL_BEFORE_SLEEP set, the beforesleep callback is called.
  *
  * The function returns the number of events processed. */
+/**
+ * 事件驱动器的事件处理
+ *
+ * @param eventLoop 事件驱动器
+ * @param flags 需要处理的事件类型
+ * @return
+ */
 int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 {
     int processed = 0, numevents;
 
+    // 如果不存在文件和时间类型的事件，直接退出
     /* Nothing to do? return ASAP */
     if (!(flags & AE_TIME_EVENTS) && !(flags & AE_FILE_EVENTS)) return 0;
 
+    /**
+     * 处理file events
+     * 计算下一个时间事件距当前时间的间隔，作为执行epoll_wait()的timeout
+     */
     /* Note that we want to call select() even if there are no
      * file events to process as long as we want to process time
      * events, in order to sleep until the next time event is ready
      * to fire. */
-    if (eventLoop->maxfd != -1 ||
-        ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
+    if (eventLoop->maxfd != -1 || ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
         int j;
+        // 需要设置的时间间隔
         struct timeval tv, *tvp;
         int64_t usUntilTimer = -1;
 
         if (flags & AE_TIME_EVENTS && !(flags & AE_DONT_WAIT))
+            // 计算与最近的一个时间事件间隔，默认是100000微秒，即100ms
             usUntilTimer = usUntilEarliestTimer(eventLoop);
 
         if (usUntilTimer >= 0) {
@@ -396,18 +448,27 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             tvp = &tv;
         }
 
+        // epoll_wait()之前，执行beforesleep()
         if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
             eventLoop->beforesleep(eventLoop);
 
+        /**
+         * 执行epoll_wait()，查询触发的事件
+         * 已触发的事件会被copy到eventLoop的fired中，并会设置fireEvent关联的客户端fd和事件类型
+         */
         /* Call the multiplexing API, will return only on timeout or when
          * some event fires. */
         numevents = aeApiPoll(eventLoop, tvp);
 
+        // epoll_wait()之后，执行aftersleep()
         /* After sleep callback. */
         if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
             eventLoop->aftersleep(eventLoop);
 
+        // 遍历处理所有触发的事件
         for (j = 0; j < numevents; j++) {
+            // 获取事件关联的描述符
+            // 不明白为什么不直接 aeFileEvent *fe=eventLoop->fired[j] 拿到event，而是从&eventLoop->events[fd]取
             int fd = eventLoop->fired[j].fd;
             aeFileEvent *fe = &eventLoop->events[fd];
             int mask = eventLoop->fired[j].mask;
@@ -432,12 +493,14 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              *
              * Fire the readable event if the call sequence is not
              * inverted. */
+            // 处理ipfd的AE_READABLE 事件，调用networking.acceptTcpHandler()函数处理客户端连接
             if (!invert && fe->mask & mask & AE_READABLE) {
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
             }
 
+            // 单机运行ipfd上应该不会触发AE_WRITABLE事件吧，集群或者主从有可能？
             /* Fire the writable event. */
             if (fe->mask & mask & AE_WRITABLE) {
                 if (!fired || fe->wfileProc != fe->rfileProc) {
@@ -461,6 +524,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             processed++;
         }
     }
+
+    // 处理time events，遍历时间事件链表处理
     /* Check time events */
     if (flags & AE_TIME_EVENTS)
         processed += processTimeEvents(eventLoop);
@@ -490,12 +555,17 @@ int aeWait(int fd, int mask, long long milliseconds) {
     }
 }
 
+/**
+ * 主线程死循环处理事件驱动器上的事件
+ *
+ * @param eventLoop 事件驱动器
+ */
 void aeMain(aeEventLoop *eventLoop) {
+    // stop状态标记为0
     eventLoop->stop = 0;
+    // 死循环，处理AE_FILE_EVENTS、AE_TIME_EVENTS、AE_CALL_BEFORE_SLEEP、AE_CALL_AFTER_SLEEP事件
     while (!eventLoop->stop) {
-        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
-                                   AE_CALL_BEFORE_SLEEP|
-                                   AE_CALL_AFTER_SLEEP);
+        aeProcessEvents(eventLoop, AE_ALL_EVENTS|AE_CALL_BEFORE_SLEEP|AE_CALL_AFTER_SLEEP);
     }
 }
 

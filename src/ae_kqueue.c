@@ -59,7 +59,22 @@ static inline void resetEventMask(char *eventsMask, int fd) {
     eventsMask[fd/4] &= ~EVENT_MASK_ENCODE(fd, 0x3);
 }
 
+/**
+ * 根据操作系统和硬件平台实际调用对应库函数创建fd和events，并绑定到eventLoop
+ * kqueue和epoll的实现类似，这里以epoll为例做分析
+ *
+ * epoll主要有三个函数：
+ * epoll_create(int size)：该函数生成一个epoll专用的文件描述符epfd，size参数指定生成描述符的最大范围
+ * int epoll_ctl(int epfd,int op,int fd,struct epoll_event *event)：该函数用于控制某个文件描述符上的事件，可以注册事件，修改事件，删除事件
+ * int epoll_wait(int epfd,struct epoll_event *events,int maxevents,int timeout)：该函数用于轮询I/O事件的发生，调用成功时返回就绪的文件描述符的个数，失败时返回-1。该函数如果检测到事件，就将所有就绪的事件从内核表中（由epfd参数指定）复制到它的第二个参数events指向的数组中
+ *
+ * 也就是说，基本流程为通过socket创建serverFd，然后调用epoll_create()创建epfd，再调用epoll_ctl()向serverFd(即ipfd)上注册感兴趣的事件，最后调用epoll_wait()轮询监听serverFd上发生的事件
+ *
+ * @param eventLoop 事件处理器
+ * @return
+ */
 static int aeApiCreate(aeEventLoop *eventLoop) {
+    // aeApiState是对实际fd和events的封装
     aeApiState *state = zmalloc(sizeof(aeApiState));
 
     if (!state) return -1;
@@ -68,6 +83,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
         zfree(state);
         return -1;
     }
+    // 调用对应平台的库函数，返回对应的epfd
     state->kqfd = kqueue();
     if (state->kqfd == -1) {
         zfree(state->events);
@@ -77,6 +93,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
     anetCloexec(state->kqfd);
     state->eventsMask = zmalloc(EVENT_MASK_MALLOC_SIZE(eventLoop->setsize));
     memset(state->eventsMask, 0, EVENT_MASK_MALLOC_SIZE(eventLoop->setsize));
+    // 将aeApiState绑定到eventLoop，实现不同平台下进行统一调用
     eventLoop->apidata = state;
     return 0;
 }
@@ -99,14 +116,24 @@ static void aeApiFree(aeEventLoop *eventLoop) {
     zfree(state);
 }
 
+/**
+ * 在事件处理器上为ipfd注册事件
+ *
+ * @param eventLoop 事件驱动器
+ * @param fd socket-ipfd描述符
+ * @param mask 要注册的事件类型
+ * @return
+ */
 static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     aeApiState *state = eventLoop->apidata;
     struct kevent ke;
 
+    // 注册AE_READABLE事件
     if (mask & AE_READABLE) {
         EV_SET(&ke, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
         if (kevent(state->kqfd, &ke, 1, NULL, 0, NULL) == -1) return -1;
     }
+    // 注册AE_WRITABLE事件
     if (mask & AE_WRITABLE) {
         EV_SET(&ke, fd, EVFILT_WRITE, EV_ADD, 0, 0, NULL);
         if (kevent(state->kqfd, &ke, 1, NULL, 0, NULL) == -1) return -1;

@@ -407,7 +407,19 @@ int anetUnixGenericConnect(char *err, const char *path, int flags)
     return s;
 }
 
+/**
+ * socket绑定监听
+ *
+ * @param err 错误日志
+ * @param s socket
+ * @param sa 绑定地址
+ * @param len 地址长度
+ * @param backlog 连接队列长度
+ * @param perm
+ * @return
+ */
 static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int backlog, mode_t perm) {
+    // 绑定地址
     if (bind(s,sa,len) == -1) {
         anetSetError(err, "bind: %s", strerror(errno));
         close(s);
@@ -417,6 +429,7 @@ static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int 
     if (sa->sa_family == AF_LOCAL && perm)
         chmod(((struct sockaddr_un *) sa)->sun_path, perm);
 
+    // 开始监听
     if (listen(s, backlog) == -1) {
         anetSetError(err, "listen: %s", strerror(errno));
         close(s);
@@ -434,6 +447,16 @@ static int anetV6Only(char *err, int s) {
     return ANET_OK;
 }
 
+/**
+ * TCP监听
+ *
+ * @param err 错误日志
+ * @param port 端口
+ * @param bindaddr 地址
+ * @param af 地址类型，IPv4、IPv6
+ * @param backlog 连接队列长度限制
+ * @return 创建的fd
+ */
 static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backlog)
 {
     int s = -1, rv;
@@ -455,11 +478,13 @@ static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backl
         return ANET_ERR;
     }
     for (p = servinfo; p != NULL; p = p->ai_next) {
+        // 调用系统函数创建socket
         if ((s = socket(p->ai_family,p->ai_socktype,p->ai_protocol)) == -1)
             continue;
 
         if (af == AF_INET6 && anetV6Only(err,s) == ANET_ERR) goto error;
         if (anetSetReuseAddr(err,s) == ANET_ERR) goto error;
+        // socket绑定指定地址，监听
         if (anetListen(err,s,p->ai_addr,p->ai_addrlen,backlog,0) == ANET_ERR) s = ANET_ERR;
         goto end;
     }
@@ -516,6 +541,7 @@ static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *l
 #ifdef HAVE_ACCEPT4
         fd = accept4(s, sa, len,  SOCK_NONBLOCK | SOCK_CLOEXEC);
 #else
+        // 调用库函数接收连接
         fd = accept(s,sa,len);
 #endif
     } while(fd == -1 && errno == EINTR);
@@ -529,6 +555,7 @@ static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *l
         close(fd);
         return ANET_ERR;
     }
+    // 确保连接是非阻塞的，redis基于事件驱动，所以连接必须是非阻塞的
     if (anetNonBlock(err, fd) != ANET_OK) {
         close(fd);
         return ANET_ERR;
@@ -537,15 +564,27 @@ static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *l
     return fd;
 }
 
+/**
+ * 接收客户端连接
+ *
+ * @param err 错误日志
+ * @param serversock ipfd
+ * @param ip 客户端ip
+ * @param ip_len
+ * @param port 客户端port
+ * @return 客户端fd
+ */
 /* Accept a connection and also make sure the socket is non-blocking, and CLOEXEC.
  * returns the new socket FD, or -1 on error. */
 int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port) {
     int fd;
     struct sockaddr_storage sa;
     socklen_t salen = sizeof(sa);
+    // 接收连接，返回客户端fd
     if ((fd = anetGenericAccept(err,serversock,(struct sockaddr*)&sa,&salen)) == ANET_ERR)
         return ANET_ERR;
 
+    // TCP连接，获取客户端ip port
     if (sa.ss_family == AF_INET) {
         struct sockaddr_in *s = (struct sockaddr_in *)&sa;
         if (ip) inet_ntop(AF_INET,(void*)&(s->sin_addr),ip,ip_len);

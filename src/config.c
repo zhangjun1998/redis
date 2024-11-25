@@ -454,6 +454,7 @@ void loadServerConfigFromString(char *config) {
     reading_config_file = 1;
     lines = sdssplitlen(config,strlen(config),"\n",1,&totlines);
 
+    // 按行解析配置
     for (i = 0; i < totlines; i++) {
         sds *argv;
         int argc;
@@ -705,6 +706,7 @@ void loadServerConfig(char *filename, char config_from_stdin, char *options) {
         config = sdscat(config,"\n");
         config = sdscat(config,options);
     }
+    // 解析配置文件
     loadServerConfigFromString(config);
     sdsfree(config);
 }

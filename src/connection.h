@@ -80,7 +80,7 @@ struct connection {
     short int flags;
     short int refs;
     int last_errno;
-    void *private_data;
+    void *private_data; // 关联的客户端client
     ConnectionCallbackFunc conn_handler;
     ConnectionCallbackFunc write_handler;
     ConnectionCallbackFunc read_handler;
@@ -176,8 +176,18 @@ static inline int connSetWriteHandler(connection *conn, ConnectionCallbackFunc f
     return conn->type->set_write_handler(conn, func, 0);
 }
 
+
 /* Register a read handler, to be called when the connection is readable.
  * If NULL, the existing handler is removed.
+ */
+/**
+ * 调用ConnectionType的set_read_handler函数
+ * ConnectionType是枚举，TCP连接对应的ConnectionType为CT_Socket
+ * 所以该函数实际调用的是CT_Socket的connSocketSetReadHandler函数，该函数会在cfd上注册事件并将func设置为回调函数，即readQueryFromClient()函数
+ *
+ * @param conn 客户端连接
+ * @param func 读事件处理函数
+ * @return
  */
 static inline int connSetReadHandler(connection *conn, ConnectionCallbackFunc func) {
     return conn->type->set_read_handler(conn, func);

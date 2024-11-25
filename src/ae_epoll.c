@@ -36,6 +36,19 @@ typedef struct aeApiState {
     struct epoll_event *events;
 } aeApiState;
 
+/**
+ * Redis中aeApiCreate的epoll实现，用于给eventLoop提供底层能力
+ *
+ * epoll主要有三个函数：
+ * epoll_create(int size)：该函数生成一个epoll专用的文件描述符epfd，size参数指定生成描述符的最大范围
+ * int epoll_ctl(int epfd,int op,int fd,struct epoll_event *event)：该函数用于控制某个文件描述符上的事件，可以注册事件，修改事件，删除事件
+ * int epoll_wait(int epfd,struct epoll_event *events,int maxevents,int timeout)：该函数用于轮询I/O事件的发生，调用成功时返回就绪的文件描述符的个数，失败时返回-1。该函数如果检测到事件，就将所有就绪的事件从内核表中（由epfd参数指定）复制到它的第二个参数events指向的数组中
+ *
+ * 也就是说，基本流程为通过socket创建serverFd，然后调用epoll_create()创建epfd，再调用epoll_ctl()向serverFd(即ipfd)上注册感兴趣的事件，最后调用epoll_wait()轮询监听serverFd上发生的事件
+ *
+ * @param eventLoop
+ * @return
+ */
 static int aeApiCreate(aeEventLoop *eventLoop) {
     aeApiState *state = zmalloc(sizeof(aeApiState));
 
@@ -45,6 +58,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
         zfree(state);
         return -1;
     }
+    // 调用epoll_create()创建epfd，将epfd设置到aeApiState
     state->epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */
     if (state->epfd == -1) {
         zfree(state->events);
@@ -52,6 +66,7 @@ static int aeApiCreate(aeEventLoop *eventLoop) {
         return -1;
     }
     anetCloexec(state->epfd);
+    // 将aeApiState设置到eventLoop，后续通过调用eventLoop的API实现业务，屏蔽不同平台的底层操作
     eventLoop->apidata = state;
     return 0;
 }
