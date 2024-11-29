@@ -251,7 +251,9 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     sh = (char*)s-sdsHdrSize(oldtype);
     reqlen = newlen = (len+addlen);
     assert(newlen > len);   /* Catch size_t overflow */
+    // 贪婪性扩容
     if (greedy == 1) {
+        // 小于1M，直接翻倍，大于1M，每次直接加1M
         if (newlen < SDS_MAX_PREALLOC)
             newlen *= 2;
         else

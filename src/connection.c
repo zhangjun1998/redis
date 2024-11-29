@@ -170,7 +170,16 @@ static void connSocketClose(connection *conn) {
     zfree(conn);
 }
 
+/**
+ * 发送数据到客户端
+ *
+ * @param conn 客户端连接
+ * @param data 需要发送的数据
+ * @param data_len 数据大小
+ * @return
+ */
 static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
+    // 调用标准库函数write()发送
     int ret = write(conn->fd, data, data_len);
     if (ret < 0 && errno != EAGAIN) {
         conn->last_errno = errno;
@@ -200,7 +209,17 @@ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcn
     return ret;
 }
 
+
+/**
+ * 从客户端连接读取数据
+ *
+ * @param conn 客户端连接
+ * @param buf 读缓冲区
+ * @param buf_len 缓冲区大小
+ * @return 读取到的字节数
+ */
 static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
+    // 调用标准库的read函数读取
     int ret = read(conn->fd, buf, buf_len);
     if (!ret) {
         conn->state = CONN_STATE_CLOSED;
@@ -390,8 +409,10 @@ static int connSocketGetType(connection *conn) {
 ConnectionType CT_Socket = {
     .ae_handler = connSocketEventHandler,
     .close = connSocketClose,
+    // 客户端socket写，发送数据到客户端
     .write = connSocketWrite,
     .writev = connSocketWritev,
+    // 客户端socket读
     .read = connSocketRead,
 
     .accept = connSocketAccept,

@@ -317,20 +317,26 @@ void psetexCommand(client *c) {
     setGenericCommand(c,OBJ_PX,c->argv[1],c->argv[3],c->argv[2],UNIT_MILLISECONDS,NULL,NULL);
 }
 
+// 执行get命令
 int getGenericCommand(client *c) {
     robj *o;
 
+    // lookupKeyReadOrReply查询redisObj，若不存在直接返回
+    // 最终也会走到 dictFind 函数，从字典中查询
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.null[c->resp])) == NULL)
         return C_OK;
 
+    // 对象的数据类型与命令不匹配
     if (checkType(c,o,OBJ_STRING)) {
         return C_ERR;
     }
 
+    // 查询到数据，组装RESP协议格式的响应并写入到输出缓冲区，等待eventLoop在下一次循环执行beforesleep()时发送
     addReplyBulk(c,o);
     return C_OK;
 }
 
+// get命令的函数实现
 void getCommand(client *c) {
     getGenericCommand(c);
 }

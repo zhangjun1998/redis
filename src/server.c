@@ -1590,6 +1590,12 @@ extern int ProcessingEventsWhileBlocked;
  *
  * The most important is freeClientsInAsyncFreeQueue but we also
  * call some other low-risk functions. */
+
+/**
+ * 事件循环中每次进行IO事件处理前都会执行
+ *
+ * @param eventLoop
+ */
 void beforeSleep(struct aeEventLoop *eventLoop) {
     UNUSED(eventLoop);
 
@@ -1699,6 +1705,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         flushAppendOnlyFile(0);
 
     /* Handle writes with pending output buffers. */
+    // 处理客户端输出缓冲区client->buf，命令的响应会在此时从缓冲区真正发送给客户端
     handleClientsWithPendingWritesUsingThreads();
 
     /* Close clients that need to be closed asynchronous */
@@ -2046,8 +2053,10 @@ void initServerConfig(void) {
     /* Command table -- we initialize it here as it is part of the
      * initial configuration, since command names may be changed via
      * redis.conf using the rename-command directive. */
+    // 初始化命令列表，后续客户端命令需要从命令列表中匹配
     server.commands = dictCreate(&commandTableDictType);
     server.orig_commands = dictCreate(&commandTableDictType);
+    // 填充命令到server.commands
     populateCommandTable();
 
     /* Debugging */
@@ -3010,10 +3019,14 @@ int populateCommandStructure(struct redisCommand *c) {
     return C_OK;
 }
 
+// 命令表，定义见commands.c
 extern struct redisCommand redisCommandTable[];
 
 /* Populates the Redis Command Table dict from the static table in commands.c
  * which is auto generated from the json files in the commands folder. */
+/**
+ * 为server.commands填充命令
+ */
 void populateCommandTable(void) {
     int j;
     struct redisCommand *c;
@@ -3128,15 +3141,29 @@ struct redisCommand *lookupSubcommand(struct redisCommand *container, sds sub_na
  * name (e.g. in COMMAND INFO) rather than to find the command
  * a user requested to execute (in processCommand).
  */
+/**
+ * 根据命令内容寻找具体命令
+ *
+ * @param commands 命令表
+ * @param argv 参数对象
+ * @param argc 参数数量
+ * @param strict
+ * @return
+ */
 struct redisCommand *lookupCommandLogic(dict *commands, robj **argv, int argc, int strict) {
+    // 在server的成员变量commands中寻找命令，该变量在服务器启动时initServerConfig()中初始化
+    // argv[0] -> ptr 就是命令名称的内存地址，如"get name"命令的(char*)argv[0]->ptr为get
+    // 在命令字典中进行匹配查询即可找到命令对应的redisCommand
     struct redisCommand *base_cmd = dictFetchValue(commands, argv[0]->ptr);
     int has_subcommands = base_cmd && base_cmd->subcommands_dict;
     if (argc == 1 || !has_subcommands) {
         if (strict && argc != 1)
             return NULL;
         /* Note: It is possible that base_cmd->proc==NULL (e.g. CONFIG) */
+        // 基础命令，直接返回
         return base_cmd;
     } else { /* argc > 1 && has_subcommands */
+        // 子命令，继续查询
         if (strict && argc != 2)
             return NULL;
         /* Note: Currently we support just one level of subcommands */
@@ -3144,7 +3171,15 @@ struct redisCommand *lookupCommandLogic(dict *commands, robj **argv, int argc, i
     }
 }
 
+/**
+ * 根据命令内容寻找具体命令
+ *
+ * @param argv
+ * @param argc
+ * @return
+ */
 struct redisCommand *lookupCommand(robj **argv, int argc) {
+    // 在server.commands中寻找命令
     return lookupCommandLogic(server.commands,argv,argc,0);
 }
 
@@ -3443,7 +3478,14 @@ int incrCommandStatsOnError(struct redisCommand *cmd, int flags) {
  * preventCommandReplication(client *c);
  *
  */
+/**
+ * 命令最终调用
+ *
+ * @param c
+ * @param flags
+ */
 void call(client *c, int flags) {
+    // 拿到命令
     long long dirty;
     uint64_t client_old_flags = c->flags;
     struct redisCommand *real_cmd = c->realcmd;
@@ -3482,18 +3524,20 @@ void call(client *c, int flags) {
         monotonic_start = getMonotonicUs();
 
     server.in_nested_call++;
+    // 调用命令对应的实现执行命令
     c->cmd->proc(c);
     server.in_nested_call--;
 
     /* In order to avoid performance implication due to querying the clock using a system call 3 times,
      * we use a monotonic clock, when we are sure its cost is very low, and fall back to non-monotonic call otherwise. */
+    // 统计命令执行时长
     ustime_t duration;
     if (monotonicGetType() == MONOTONIC_CLOCK_HW)
         duration = getMonotonicUs() - monotonic_start;
     else
         duration = ustime() - call_timer;
-
     c->duration = duration;
+
     dirty = server.dirty-dirty;
     if (dirty < 0) dirty = 0;
 
@@ -3544,6 +3588,7 @@ void call(client *c, int flags) {
 
     /* Log the command into the Slow log if needed.
      * If the client is blocked we will handle slowlog when it is unblocked. */
+    // 慢日志记录
     if ((flags & CMD_CALL_SLOWLOG) && !(c->flags & CLIENT_BLOCKED))
         slowlogPushCurrentCommand(c, real_cmd, duration);
 
@@ -3637,6 +3682,7 @@ void call(client *c, int flags) {
         server.stat_peak_memory = zmalloc_used;
 
     /* Do some maintenance job and cleanup */
+    // 命令执行后的一些维护清理工作
     afterCommand(c);
 
     /* Client pause takes effect after a transaction has finished. This needs
@@ -3775,6 +3821,11 @@ uint64_t getCommandFlags(client *c) {
  * If C_OK is returned the client is still alive and valid and
  * other operations can be performed by the caller. Otherwise
  * if C_ERR is returned the client was destroyed (i.e. after QUIT). */
+/**
+ * 客户端命令执行
+ * @param c
+ * @return
+ */
 int processCommand(client *c) {
     if (!scriptIsTimedout()) {
         /* Both EXEC and scripts call call() directly so there should be
@@ -3805,6 +3856,7 @@ int processCommand(client *c) {
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
+    // 根据命令内容和参数找到具体命令redisCommand对象
     c->cmd = c->lastcmd = c->realcmd = lookupCommand(c->argv,c->argc);
     sds err;
     if (!commandCheckExistence(c, &err)) {
@@ -4105,6 +4157,7 @@ int processCommand(client *c) {
     }
 
     /* Exec the command */
+    // 开启了事务，命令入队
     if (c->flags & CLIENT_MULTI &&
         c->cmd->proc != execCommand &&
         c->cmd->proc != discardCommand &&
@@ -4116,6 +4169,7 @@ int processCommand(client *c) {
         queueMultiCommand(c, cmd_flags);
         addReply(c,shared.queued);
     } else {
+        // 不在事务中，直接执行并写入AOF和慢查询日志，以及维护一些统计信息
         call(c,CMD_CALL_FULL);
         c->woff = server.master_repl_offset;
         if (listLength(server.ready_keys) && !isInsideYieldingLongCommand())
@@ -7045,8 +7099,10 @@ int main(int argc, char **argv) {
     char *exec_name = strrchr(argv[0], '/');
     if (exec_name == NULL) exec_name = argv[0];
     server.sentinel_mode = checkForSentinelMode(argc,argv, exec_name);
+
     // 初始化server配置
     initServerConfig();
+
     ACLInit(); /* The ACL subsystem must be initialized ASAP because the
                   basic networking code and client creation depends on it. */
     moduleInitModulesSystem();
@@ -7224,6 +7280,7 @@ int main(int argc, char **argv) {
 
     // 服务器初始化，所需数据结构初始化、kv数据库初始化、网络框架初始化、资源状态等信息
     initServer();
+
     // 将进程id写入文件
     if (background || server.pidfile) createPidFile();
     // 重新设置进程名称，根据配置文件中的格式设置

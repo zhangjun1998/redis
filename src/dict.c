@@ -514,6 +514,15 @@ void dictRelease(dict *d)
     zfree(d);
 }
 
+/**
+ * 使用key在字典中进行查询
+ * 字典的结构为数组+链表，由于rehash和扩容的关系，会同时存在两个ht_table，因此需要遍历
+ * 不仅数据是使用dict结构存储的，命令列表也是
+ *
+ * @param d 字典
+ * @param key 要查询的key
+ * @return
+ */
 dictEntry *dictFind(dict *d, const void *key)
 {
     dictEntry *he;
@@ -521,10 +530,15 @@ dictEntry *dictFind(dict *d, const void *key)
 
     if (dictSize(d) == 0) return NULL; /* dict is empty */
     if (dictIsRehashing(d)) _dictRehashStep(d);
+    // key的哈希值
     h = dictHashKey(d, key);
+    // 遍历table
     for (table = 0; table <= 1; table++) {
+        // 根据哈希值转为数组索引
         idx = h & DICTHT_SIZE_MASK(d->ht_size_exp[table]);
+        // 拿到链表
         he = d->ht_table[table][idx];
+        // 遍历链表匹配命令名称
         while(he) {
             if (key==he->key || dictCompareKeys(d, key, he->key))
                 return he;

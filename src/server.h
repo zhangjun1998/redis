@@ -379,8 +379,8 @@ extern int configOOMScoreAdjValuesDefaults[CONFIG_OOM_COUNT];
 #define BLOCKED_NUM 8      /* Number of blocked states. */
 
 /* Client request types */
-#define PROTO_REQ_INLINE 1
-#define PROTO_REQ_MULTIBULK 2
+#define PROTO_REQ_INLINE 1 // 管道类型命令，比如使用telnet连接，按照RESP格式通过多次发送才能形成完整命令
+#define PROTO_REQ_MULTIBULK 2 // RESP协议格式标准命令
 
 /* Client classes for client limits, currently used only for
  * the max-client-output-buffer limit implementation. */
@@ -1090,17 +1090,17 @@ typedef struct {
 } clientMemUsageBucket;
 
 typedef struct client {
-    uint64_t id;            /* Client incremental unique ID. */
+    uint64_t id;            // 客户端id /* Client incremental unique ID. */
     uint64_t flags;         /* Client flags: CLIENT_* macros. */
-    connection *conn;
+    connection *conn;       // 客户端连接
     int resp;               /* RESP protocol version. Can be 2 or 3. */
-    redisDb *db;            /* Pointer to currently SELECTed DB. */
+    redisDb *db;            // 客户端当前选择的db /* Pointer to currently SELECTed DB. */
     robj *name;             /* As set by CLIENT SETNAME. */
-    sds querybuf;           /* Buffer we use to accumulate client queries. */
-    size_t qb_pos;          /* The position we have read in querybuf. */
+    sds querybuf;           // 客户端读取缓冲区 /* Buffer we use to accumulate client queries. */
+    size_t qb_pos;          // 缓冲区已读位置 /* The position we have read in querybuf. */
     size_t querybuf_peak;   /* Recent (100ms or more) peak of querybuf size. */
-    int argc;               /* Num of arguments of current command. */
-    robj **argv;            /* Arguments of current command. */
+    int argc;               // 当前命令携带的参数数量，如 *2\r\n$3\r\nget\r\n$4\r\nname\r\n 的参数数量为2 /* Num of arguments of current command. */
+    robj **argv;            // 当前命令携带的参数对象，数组结构 /* Arguments of current command. */
     int argv_len;           /* Size of argv array (may be more than argc) */
     int original_argc;      /* Num of arguments of original command if arguments were rewritten. */
     robj **original_argv;   /* Arguments of original command if arguments were rewritten. */
@@ -1112,10 +1112,10 @@ typedef struct client {
     user *user;             /* User associated with this connection. If the
                                user is set to NULL the connection can do
                                anything (admin). */
-    int reqtype;            /* Request protocol type: PROTO_REQ_* */
-    int multibulklen;       /* Number of multi bulk arguments left to read. */
+    int reqtype;            // 请求类型，PROTO_REQ_INLINE或者PROTO_REQ_MULTIBULK /* Request protocol type: PROTO_REQ_* */
+    int multibulklen;       // 剩余未读的参数个数，这里是RESP格式的表达而非自然语言的参数个数 /* Number of multi bulk arguments left to read. */
     long bulklen;           /* Length of bulk argument in multi bulk request. */
-    list *reply;            /* List of reply objects to send to the client. */
+    list *reply;            // 请求响应 /* List of reply objects to send to the client. */
     unsigned long long reply_bytes; /* Tot bytes of objects in reply list. */
     list *deferred_reply_errors;    /* Used for module thread safe contexts. */
     size_t sentlen;         /* Amount of bytes already sent in the current
@@ -1198,7 +1198,7 @@ typedef struct client {
     mstime_t buf_peak_last_reset_time; /* keeps the last time the buffer peak value was reset */
     int bufpos;
     size_t buf_usable_size; /* Usable size of buffer. */
-    char *buf;
+    char *buf; // 输出缓冲区
 } client;
 
 struct saveparam {
@@ -1526,7 +1526,7 @@ struct redisServer {
     list *clients_pending_write; /* There is to write or install handler. */
     list *clients_pending_read;  /* Client has pending read socket buffers. */
     list *slaves, *monitors;    /* List of slaves and MONITORs */
-    client *current_client;     /* Current client executing the command. */
+    client *current_client;     // 当前执行的命令所属客户端 /* Current client executing the command. */
 
     /* Stuff for client mem eviction */
     clientMemUsageBucket* client_mem_usage_buckets;
@@ -2233,6 +2233,7 @@ typedef int redisGetKeysProc(struct redisCommand *cmd, robj **argv, int argc, ge
  *    specific data structures, such as: DEL, RENAME, MOVE, SELECT,
  *    TYPE, EXPIRE*, PEXPIRE*, TTL, PTTL, ...
  */
+// redis命令结构体
 struct redisCommand {
     /* Declarative data */
     const char *declared_name; /* A string representing the command declared_name.
@@ -2246,7 +2247,7 @@ struct redisCommand {
     redisCommandGroup group; /* Command group */
     commandHistory *history; /* History of the command */
     const char **tips; /* An array of strings that are meant to be tips for clients/proxies regarding this command */
-    redisCommandProc *proc; /* Command implementation */
+    redisCommandProc *proc; // 命令对应的函数实现 /* Command implementation */
     int arity; /* Number of arguments, it is possible to use -N to say >= N */
     uint64_t flags; /* Command flags, see CMD_*. */
     uint64_t acl_categories; /* ACl categories, see ACL_CATEGORY_*. */
