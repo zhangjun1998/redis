@@ -84,8 +84,18 @@ void updateLFU(robj *val) {
  * Even if the key expiry is master-driven, we can correctly report a key is
  * expired on replicas even if the master is lagging expiring our key via DELs
  * in the replication link. */
+/**
+ * 从指定的db中查询key
+ *
+ * @param db 要查询的db
+ * @param key 要查询的key
+ * @param flags 决定查询中要执行的一些操作
+ * @return
+ */
 robj *lookupKey(redisDb *db, robj *key, int flags) {
+    // 从db.dict字典中找到了dictEntry，即
     dictEntry *de = dictFind(db->dict,key->ptr);
+    // 对应的redisObject
     robj *val = NULL;
     if (de) {
         val = dictGetVal(de);
@@ -103,6 +113,7 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
             expire_flags |= EXPIRE_FORCE_DELETE_EXPIRED;
         if (flags & LOOKUP_NOEXPIRE)
             expire_flags |= EXPIRE_AVOID_DELETE_EXPIRED;
+        // 如果key过期则删除，key过期策略=>惰性删除，redisObject返回NULL
         if (expireIfNeeded(db, key, expire_flags)) {
             /* The key is no longer valid. */
             val = NULL;
@@ -115,6 +126,7 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
          * a copy on write madness. */
         if (!hasActiveChildProcess() && !(flags & LOOKUP_NOTOUCH)){
             if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+                // 更新最后访问时间，方便LRU算法的执行
                 updateLFU(val);
             } else {
                 val->lru = LRU_CLOCK();
@@ -146,13 +158,14 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
  * the key. */
 robj *lookupKeyReadWithFlags(redisDb *db, robj *key, int flags) {
     serverAssert(!(flags & LOOKUP_WRITE));
+    // 从指定的db中查询key
     return lookupKey(db, key, flags);
 }
 
 /* Like lookupKeyReadWithFlags(), but does not use any flag, which is the
  * common case. */
 /**
- * 根据key查询对象
+ * 根据key查询redis对象
  *
  * @param db 客户端选择的db
  * @param key key
@@ -185,6 +198,7 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
  * @return
  */
 robj *lookupKeyReadOrReply(client *c, robj *key, robj *reply) {
+    // 根据key查询到redisObject
     robj *o = lookupKeyRead(c->db, key);
     if (!o) addReplyOrErrorObject(c, reply);
     return o;
@@ -1575,17 +1589,27 @@ long long getExpire(redisDb *db, robj *key) {
 }
 
 /* Delete the specified expired key and propagate expire. */
+/**
+ * 从指定db中删除过期key并传播删除行为给slave和AOF
+ *
+ * @param db
+ * @param keyobj key
+ */
 void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj) {
     mstime_t expire_latency;
     latencyStartMonitor(expire_latency);
+    // 开启了延迟删除，异步执行
     if (server.lazyfree_lazy_expire)
         dbAsyncDelete(db,keyobj);
     else
+        // 立即删除，从字典中移除并且释放内存
         dbSyncDelete(db,keyobj);
     latencyEndMonitor(expire_latency);
     latencyAddSampleIfNeeded("expire-del",expire_latency);
     notifyKeyspaceEvent(NOTIFY_EXPIRED,"expired",keyobj,db->id);
     signalModifiedKey(NULL, db, keyobj);
+    // 将删除行为传播给slave和AOF文件
+    // 这里传播给slave可以尽量解决主从数据不一致问题
     propagateDeletion(db,keyobj,server.lazyfree_lazy_expire);
     server.stat_expiredkeys++;
 }
@@ -1608,6 +1632,13 @@ void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj) {
  *    postExecutionUnitOperations, preferably just after a
  *    single deletion batch, so that DELs will NOT be wrapped
  *    in MULTI/EXEC */
+/**
+ * 传播删除行为
+ *
+ * @param db
+ * @param key
+ * @param lazy
+ */
 void propagateDeletion(redisDb *db, robj *key, int lazy) {
     robj *argv[2];
 
@@ -1628,6 +1659,13 @@ void propagateDeletion(redisDb *db, robj *key, int lazy) {
 }
 
 /* Check if the key is expired. */
+/**
+ * 判断key是否过期，0否1是，未设置过期时间时返回-1
+ *
+ * @param db
+ * @param key
+ * @return
+ */
 int keyIsExpired(redisDb *db, robj *key) {
     mstime_t when = getExpire(db,key);
     mstime_t now;
@@ -1727,6 +1765,7 @@ int expireIfNeeded(redisDb *db, robj *key, int flags) {
     if (checkClientPauseTimeoutAndReturnIfPaused()) return 1;
 
     /* Delete the key */
+    // 删除key并传播本次行为给AOF和slave
     deleteExpiredKeyAndPropagate(db,key);
     return 1;
 }

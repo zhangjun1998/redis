@@ -576,13 +576,22 @@ void tryResizeHashTables(int dbid) {
  *
  * The function returns 1 if some rehashing was performed, otherwise 0
  * is returned. */
+/**
+ * 渐进式rehash
+ *
+ * @param dbid
+ * @return
+ */
 int incrementallyRehash(int dbid) {
     /* Keys dictionary */
+    // 对保存key的dict进行rehash
     if (dictIsRehashing(server.db[dbid].dict)) {
+        // 每次rehash操作只允许执行1ms
         dictRehashMilliseconds(server.db[dbid].dict,1);
         return 1; /* already used our millisecond for this loop... */
     }
     /* Expires */
+    // 对保存过期时间的dict进行rehash
     if (dictIsRehashing(server.db[dbid].expires)) {
         dictRehashMilliseconds(server.db[dbid].expires,1);
         return 1; /* already used our millisecond for this loop... */
@@ -1006,13 +1015,19 @@ void clientsCron(void) {
 /* This function handles 'background' operations we are required to do
  * incrementally in Redis databases, such as active key expiring, resizing,
  * rehashing. */
+/**
+ * 执行数据库相关的任务，过期key清理、resize、rehash
+ */
 void databasesCron(void) {
     /* Expire keys by random sampling. Not required for slaves
      * as master will synthesize DELs for us. */
+    // 清理过期key
     if (server.active_expire_enabled) {
+        // 当处于单机模式或者作为集群主节点时
         if (iAmMaster()) {
             activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
         } else {
+            // 作为slave节点时
             expireSlaveKeys();
         }
     }
@@ -1023,6 +1038,7 @@ void databasesCron(void) {
     /* Perform hash tables rehashing if needed, but only if there are no
      * other processes saving the DB on disk. Otherwise rehashing is bad
      * as will cause a lot of copy-on-write of memory pages. */
+    // 没有子进程在执行任务时，才可以执行rehash操作
     if (!hasActiveChildProcess()) {
         /* We use global counters so if we stop the computation at a given
          * DB we'll be able to start from the successive in the next
@@ -1036,14 +1052,19 @@ void databasesCron(void) {
         if (dbs_per_call > server.dbnum) dbs_per_call = server.dbnum;
 
         /* Resize */
+        // 判断是否需要resize，当现有内存不足以支撑rehash操作时需要resize
         for (j = 0; j < dbs_per_call; j++) {
             tryResizeHashTables(resize_db % server.dbnum);
             resize_db++;
         }
 
         /* Rehash */
+        // rehash，dict是由数组+链表组成的hash结构，而redis的数据量是一直在变动的
+        // 如果数据增多，没有对数组进行rehash，那么hash冲突就会比较严重，链表的长度就会变长，因此时间复杂度变高
+        // 如果数据减少，没有对数组进行rehash，那么会造成比较大的空间浪费
         if (server.activerehashing) {
             for (j = 0; j < dbs_per_call; j++) {
+                // 渐进式rehash，每次执行1ms，记录rehash的index，下次从rehashIndex开始继续执行
                 int work_done = incrementallyRehash(rehash_db);
                 if (work_done) {
                     /* If the function did some work, stop here, we'll do
@@ -1640,6 +1661,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
 
     /* Run a fast expire cycle (the called function will return
      * ASAP if a fast cycle is not needed). */
+    // 删除过期key，FAST模式，执行时间不得超过limit
     if (server.active_expire_enabled && server.masterhost == NULL)
         activeExpireCycle(ACTIVE_EXPIRE_CYCLE_FAST);
 
@@ -1701,6 +1723,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     /* Write the AOF buffer on disk,
      * must be done before handleClientsWithPendingWritesUsingThreads,
      * in case of appendfsync=always. */
+    // aof缓冲区输出
     if (server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE)
         flushAppendOnlyFile(0);
 
@@ -1709,6 +1732,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     handleClientsWithPendingWritesUsingThreads();
 
     /* Close clients that need to be closed asynchronous */
+    // 释放断开连接的客户端
     freeClientsInAsyncFreeQueue();
 
     /* Incrementally trim replication backlog, 10 times the normal speed is
@@ -1717,6 +1741,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
         incrementalTrimReplicationBacklog(10*REPL_BACKLOG_TRIM_BLOCKS_PER_CALL);
 
     /* Disconnect some clients if they are consuming too much memory. */
+    // 断开占用了大量内存的客户端
     evictClients();
 
     /* Before we are going to sleep, let the threads access the dataset by
@@ -3271,6 +3296,14 @@ static int shouldPropagate(int target) {
  *
  * The API for propagating commands is alsoPropagate().
  */
+/**
+ * 传播指定指令给aof和slave
+ *
+ * @param dbid 命令执行所在的db
+ * @param argv 命令参数
+ * @param argc 命令参数数量，与argv组合构成完整命令
+ * @param target 传播目标 AOF、SLAVE
+ */
 static void propagateNow(int dbid, robj **argv, int argc, int target) {
     if (!shouldPropagate(target))
         return;
@@ -3280,8 +3313,10 @@ static void propagateNow(int dbid, robj **argv, int argc, int target) {
     serverAssert(!(areClientsPaused() && !server.client_pause_in_transaction));
 
     if (server.aof_state != AOF_OFF && target & PROPAGATE_AOF)
+        // 传播给AOF
         feedAppendOnlyFile(dbid,argv,argc);
     if (target & PROPAGATE_REPL)
+        // 传播给slave
         replicationFeedSlaves(server.slaves,dbid,argv,argc);
 }
 

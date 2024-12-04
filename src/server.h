@@ -1455,12 +1455,16 @@ typedef enum childInfoType {
     CHILD_INFO_TYPE_MODULE_COW_SIZE
 } childInfoType;
 
+
+/**
+ * redisServer的数据结构，包含了一系列运行所需的数据
+ */
 struct redisServer {
     /* General */
-    pid_t pid;                  /* Main process pid. */
-    pthread_t main_thread_id;         /* Main thread id */
-    char *configfile;           /* Absolute config file path, or NULL */
-    char *executable;           /* Absolute executable file path. */
+    pid_t pid;                  // 主进程id /* Main process pid. */
+    pthread_t main_thread_id;   // 主线程id /* Main thread id */
+    char *configfile;           // 配置文件的绝对路径 /* Absolute config file path, or NULL */
+    char *executable;           // 可执行文件的绝对路径 /* Absolute executable file path. */
     char **exec_argv;           /* Executable argv vector (copy). */
     int dynamic_hz;             /* Change hz value depending on # of clients. */
     int config_hz;              /* Configured HZ value. May be different than
@@ -1469,8 +1473,8 @@ struct redisServer {
     mode_t umask;               /* The umask value of the process on startup */
     int hz;                     /* serverCron() calls frequency in hertz */
     int in_fork_child;          /* indication that this is a fork child */
-    redisDb *db;
-    dict *commands;             /* Command table */
+    redisDb *db;                // 所有db，数组结构
+    dict *commands;             // 命令列表 /* Command table */
     dict *orig_commands;        /* Command table before command renaming. */
     aeEventLoop *el;
     rax *errors;                /* Errors table */
@@ -1673,8 +1677,8 @@ struct redisServer {
                                        * Compare with the aof_last_incr_size. */
     int aof_flush_sleep;            /* Micros to sleep before flush. (used by tests) */
     int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
-    sds aof_buf;      /* AOF buffer, written before entering the event loop */
-    int aof_fd;       /* File descriptor of currently selected AOF file */
+    sds aof_buf;      // aof输出缓冲区 /* AOF buffer, written before entering the event loop */
+    int aof_fd;       // aof文件描述符 /* File descriptor of currently selected AOF file */
     int aof_selected_db; /* Currently selected DB in AOF */
     time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
     time_t aof_last_fsync;            /* UNIX time of last fsync() */
@@ -1734,7 +1738,7 @@ struct redisServer {
     int child_info_pipe[2];         /* Pipe used to write the child_info_data. */
     int child_info_nread;           /* Num of bytes of the last read from pipe */
     /* Propagation of commands in AOF / replication */
-    redisOpArray also_propagate;    /* Additional command to propagate. */
+    redisOpArray also_propagate;    // 需要传播给AOF和slave的命令数组，实现持久化和主从复制 /* Additional command to propagate. */
     int replication_allowed;        /* Are we allowed to replicate? */
     /* Logging */
     char *logfile;                  /* Path of log file */

@@ -1124,6 +1124,7 @@ void flushAppendOnlyFile(int force) {
     }
 
     latencyStartMonitor(latency);
+    // 将缓冲区数据追加写入到aof文件
     nwritten = aofWrite(server.aof_fd,server.aof_buf,sdslen(server.aof_buf));
     latencyEndMonitor(latency);
     /* We want to capture different events for delayed writes:
@@ -1306,6 +1307,13 @@ sds genAofTimestampAnnotationIfNeeded(int force) {
     return ts;
 }
 
+/**
+ * 将命令传播给aof输出缓冲区
+ *
+ * @param dictid 命令所在db
+ * @param argv 命令参数
+ * @param argc 命令参数数量
+ */
 void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
     sds buf = sdsempty();
 
@@ -1341,6 +1349,7 @@ void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
     if (server.aof_state == AOF_ON ||
         (server.aof_state == AOF_WAIT_REWRITE && server.child_type == CHILD_TYPE_AOF))
     {
+        // 追加到aof输出缓冲区
         server.aof_buf = sdscatlen(server.aof_buf, buf, sdslen(buf));
     }
 

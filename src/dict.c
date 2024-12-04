@@ -274,12 +274,20 @@ long long timeInMilliseconds(void) {
 /* Rehash in ms+"delta" milliseconds. The value of "delta" is larger 
  * than 0, and is smaller than 1 in most cases. The exact upper bound 
  * depends on the running time of dictRehash(d,100).*/
+/**
+ * 对dict进行rehash
+ *
+ * @param d dict字典
+ * @param ms 执行时间
+ * @return
+ */
 int dictRehashMilliseconds(dict *d, int ms) {
     if (d->pauserehash > 0) return 0;
 
     long long start = timeInMilliseconds();
     int rehashes = 0;
 
+    // 执行rehash操作
     while(dictRehash(d,100)) {
         rehashes += 100;
         if (timeInMilliseconds()-start > ms) break;
@@ -517,7 +525,7 @@ void dictRelease(dict *d)
 /**
  * 使用key在字典中进行查询
  * 字典的结构为数组+链表，由于rehash和扩容的关系，会同时存在两个ht_table，因此需要遍历
- * 不仅数据是使用dict结构存储的，命令列表也是
+ * 不仅数据是使用dict结构存储的，命令列表、key过期时间等也是
  *
  * @param d 字典
  * @param key 要查询的key

@@ -317,11 +317,16 @@ void psetexCommand(client *c) {
     setGenericCommand(c,OBJ_PX,c->argv[1],c->argv[3],c->argv[2],UNIT_MILLISECONDS,NULL,NULL);
 }
 
-// 执行get命令
+/**
+ * 执行get命令
+ *
+ * @param c 执行命令的客户端
+ * @return
+ */
 int getGenericCommand(client *c) {
     robj *o;
 
-    // lookupKeyReadOrReply查询redisObj，若不存在直接返回
+    // lookupKeyReadOrReply查询redisObj，若不存在直接返回，若过期则删除
     // 最终也会走到 dictFind 函数，从字典中查询
     if ((o = lookupKeyReadOrReply(c,c->argv[1],shared.null[c->resp])) == NULL)
         return C_OK;
@@ -336,7 +341,11 @@ int getGenericCommand(client *c) {
     return C_OK;
 }
 
-// get命令的函数实现
+/**
+ * get命令的函数实现
+ *
+ * @param c
+ */
 void getCommand(client *c) {
     getGenericCommand(c);
 }

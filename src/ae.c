@@ -360,12 +360,12 @@ static int processTimeEvents(aeEventLoop *eventLoop) {
 
             id = te->id;
             te->refcount++;
-            // 执行时间事件处理函数
+            // 执行时间事件处理函数，serverCron()
             retval = te->timeProc(eventLoop, id, te->clientData);
             te->refcount--;
             processed++;
             now = getMonotonicUs();
-            // 需要继续执行，设置下次触发时间
+            // 如果需要继续执行，设置下次触发时间
             if (retval != AE_NOMORE) {
                 te->when = now + retval * 1000;
             } else {

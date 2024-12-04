@@ -44,15 +44,18 @@
 #define DICT_OK 0
 #define DICT_ERR 1
 
+/**
+ * 字典中的每个条目
+ */
 typedef struct dictEntry {
-    void *key;
+    void *key; // 指向任意类型key的指针
     union {
-        void *val;
+        void *val; // 指向实际数据redisObject的指针
         uint64_t u64;
-        int64_t s64;
+        int64_t s64; // 过期时间
         double d;
-    } v;
-    struct dictEntry *next;     /* Next entry in the same hash bucket. */
+    } v; // value
+    struct dictEntry *next; // 当hash冲突时，next 指针指向下一个冲突的元素，形成单链表     /* Next entry in the same hash bucket. */
     void *metadata[];           /* An arbitrary number of bytes (starting at a
                                  * pointer-aligned address) of size as returned
                                  * by dictType's dictEntryMetadataBytes(). */
@@ -76,13 +79,18 @@ typedef struct dictType {
 #define DICTHT_SIZE(exp) ((exp) == -1 ? 0 : (unsigned long)1<<(exp))
 #define DICTHT_SIZE_MASK(exp) ((exp) == -1 ? 0 : (DICTHT_SIZE(exp))-1)
 
+/**
+ * 字典
+ */
 struct dict {
-    dictType *type;
+    dictType *type; // 字典类型，字典会被用在很多地方，比如过期key、命令列表等都是用dict存储的
 
-    dictEntry **ht_table[2];
+    // 每个 ht_table[i] 是一个指针数组，表示哈希表，数组+链表实现
+    // dictEntry 是哈希表中存储键值对的条目
+    dictEntry **ht_table[2]; // 因为会有rehash、resize操作，所以可能同时存在两个哈希表
     unsigned long ht_used[2];
 
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    long rehashidx; // 记录上次rehash执行到的位置，实现渐进式rehash /* rehashing not in progress if rehashidx == -1 */
 
     /* Keep small vars at end for optimal (minimal) struct padding */
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
