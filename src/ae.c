@@ -493,7 +493,9 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              *
              * Fire the readable event if the call sequence is not
              * inverted. */
-            // 处理ipfd的AE_READABLE 事件，调用networking.acceptTcpHandler()函数处理客户端连接
+            // 处理 AE_READABLE 事件，包括ipfd和cfd上的事件，会根据fileEvent找到关联的 rfileProc 处理函数；
+            // ipfd的rfileProc为networking.c acceptTcpHandler()函数，用于接收客户端连接
+            // cfd的rfileProc为connection.c connSocketEventHandler()函数，用于处理客户端事件
             if (!invert && fe->mask & mask & AE_READABLE) {
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;

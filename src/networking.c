@@ -138,6 +138,9 @@ client *createClient(connection *conn) {
          * 设置客户端的read_handler为readQueryFromClient()
          * 该函数用于处理后续客户端发送的命令
          * 实际这里调用的是 set_read_handler函数，会向eventLoop注册客户端fd和AE_READABLE事件
+         * 但注意：set_read_handler函数不是直接注册事件设置readQueryFromClient() 为回调，而是将 readQueryFromClient() 设置为 connection 的 read_handler，
+         * 再将AE_READABLE事件的回调函数设置为 CT_Socket.ae_handler，即 connSocketEventHandler()，这个函数并不直接处理事件而是作为不同类型事件的分发器，将不同类型事件分发给对应的处理函数，
+         * 如 AE_READABLE 事件就会分发给 readQueryFromClient()
          */
         connSetReadHandler(conn, readQueryFromClient);
         connSetPrivateData(conn, c);
@@ -2072,8 +2075,11 @@ int writeToClient(client *c, int handler_installed) {
          * aeDeleteFileEvent() is not thread safe: however writeToClient()
          * is always called with handler_installed set to 0 from threads
          * so we are fine. */
+        // 一般不会执行，handler_installed=0
         if (handler_installed) {
             serverAssert(io_threads_op == IO_THREADS_OP_IDLE);
+            // 为cfd在eventLoop上注册AE_WRITEABLE事件，并设置事件处理函数为CT_Socket->ae_handler，即connSocketEventHandler()函数
+            // 方便在事件处理循环中对cfd进行处理，将数据从缓冲区中发送给客户端
             connSetWriteHandler(c->conn, NULL);
         }
 
@@ -2741,7 +2747,8 @@ int processInputBuffer(client *c) {
 }
 
 /**
- * 客户端命令处理函数，cfd上的AE_READABLE事件触发
+ * 客户端命令处理函数，cfd上的AE_READABLE事件触发处理函数
+ * 处理函数根据事件类型调用对应处理方法，AE_READABLE事件调用该方法处理
  *
  *
  * @param conn 客户端连接

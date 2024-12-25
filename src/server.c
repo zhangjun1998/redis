@@ -1114,11 +1114,16 @@ void updateCachedTime(int update_daylight_info) {
     updateCachedTimeWithUs(update_daylight_info, us);
 }
 
+/*
+ * 检查子进程状态并执行后续操作，如AOF重写重命名更新清单文件
+ */
 void checkChildrenDone(void) {
     int statloc = 0;
     pid_t pid;
 
+    // 获取子进程pid
     if ((pid = waitpid(-1, &statloc, WNOHANG)) != 0) {
+        // 子进程结束状态，判断子进程是否执行成功
         int exitcode = WIFEXITED(statloc) ? WEXITSTATUS(statloc) : -1;
         int bysignal = 0;
 
@@ -1140,9 +1145,12 @@ void checkChildrenDone(void) {
                 strChildType(server.child_type),
                 (int) server.child_pid);
         } else if (pid == server.child_pid) {
-            if (server.child_type == CHILD_TYPE_RDB) {
+            // 根据子进程类型决定后续操作
+            if (server.child_type == CHILD_TYPE_RDB) { // bgsave
+                // 执行bgsave后续操作
                 backgroundSaveDoneHandler(exitcode, bysignal);
-            } else if (server.child_type == CHILD_TYPE_AOF) {
+            } else if (server.child_type == CHILD_TYPE_AOF) { // aof重写
+                // 执行aof重写后续操作，包括aof文件的重命名替换
                 backgroundRewriteDoneHandler(exitcode, bysignal);
             } else if (server.child_type == CHILD_TYPE_MODULE) {
                 ModuleForkDoneHandler(exitcode, bysignal);
@@ -1368,15 +1376,18 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     // AOF相关
     /* Start a scheduled AOF rewrite if this was requested by the user while
      * a BGSAVE was in progress. */
+    // 如果执行了BGSAVE，会直接触发一次aof重写，否则根据配置的重写规则执行
     if (!hasActiveChildProcess() && server.aof_rewrite_scheduled && !aofRewriteLimited())
     {
         rewriteAppendOnlyFileBackground();
     }
 
     /* Check if a background saving or AOF rewrite in progress terminated. */
+    // 检查子进程的状态，判断bgsave和aof rewrite是否结束
     if (hasActiveChildProcess() || ldbPendingChildren())
     {
         run_with_period(1000) receiveChildInfo();
+        // 检查子进程状态并执行后续操作
         checkChildrenDone();
     } else {
         /* If there is not a background saving/rewrite in progress check if
@@ -1404,6 +1415,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         }
 
         /* Trigger an AOF rewrite if needed. */
+        // 根据配置的aof重写规则决定是否执行aof重写
         if (server.aof_state == AOF_ON &&
             !hasActiveChildProcess() &&
             server.aof_rewrite_perc &&
@@ -1414,6 +1426,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             long long growth = (server.aof_current_size*100/base) - 100;
             if (growth >= server.aof_rewrite_perc && !aofRewriteLimited()) {
                 serverLog(LL_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
+                // 执行aof重写
                 rewriteAppendOnlyFileBackground();
             }
         }
@@ -1425,6 +1438,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
     /* AOF postponed flush: Try at every cron cycle if the slow fsync
      * completed. */
+    // aof缓冲区刷盘，当上次的fsync刷盘推迟了beforesleep()中的刷盘任务时才会在这里执行
     if ((server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE) &&
         server.aof_flush_postponed_start)
     {
@@ -1435,6 +1449,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
      * clear the AOF error in case of success to make the DB writable again,
      * however to try every second is enough in case of 'hz' is set to
      * a higher frequency. */
+    // 每秒再判断一次，如果上一次执行aof刷盘异常，再刷入一次
     run_with_period(1000) {
         if ((server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE) &&
             server.aof_last_write_status == C_ERR) 
@@ -1490,6 +1505,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
      * Note: this code must be after the replicationCron() call above so
      * make sure when refactoring this file to keep this order. This is useful
      * because we want to give priority to RDB savings for replication. */
+    // 当没有子进程且满足bgsave触发条件时，保存rdb文件
     if (!hasActiveChildProcess() &&
         server.rdb_bgsave_scheduled &&
         (server.unixtime-server.lastbgsave_try > CONFIG_BGSAVE_RETRY_DELAY ||
@@ -1497,6 +1513,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     {
         rdbSaveInfo rsi, *rsiptr;
         rsiptr = rdbPopulateSaveInfo(&rsi);
+        // fork一个子进程在后台执行rdb保存操作
         if (rdbSaveBackground(SLAVE_REQ_NONE,server.rdb_filename,rsiptr) == C_OK)
             server.rdb_bgsave_scheduled = 0;
     }
@@ -1723,7 +1740,7 @@ void beforeSleep(struct aeEventLoop *eventLoop) {
     /* Write the AOF buffer on disk,
      * must be done before handleClientsWithPendingWritesUsingThreads,
      * in case of appendfsync=always. */
-    // aof缓冲区输出
+    // aof缓冲区刷盘
     if (server.aof_state == AOF_ON || server.aof_state == AOF_WAIT_REWRITE)
         flushAppendOnlyFile(0);
 
@@ -2817,7 +2834,7 @@ void initServer(void) {
  * Thread Local Storage initialization collides with dlopen call.
  * see: https://sourceware.org/bugzilla/show_bug.cgi?id=19329 */
 void InitServerLast() {
-    // 创建用于执行bio队列任务的线程,默认3个线程
+    // 创建用于执行bio(bio.c -> Background I/O service)队列任务的线程,默认3个线程
     bioInit();
     // 创建IO线程，用于收发网络包
     initThreadedIO();
@@ -3298,6 +3315,7 @@ static int shouldPropagate(int target) {
  */
 /**
  * 传播指定指令给aof和slave
+ * 在命令执行、定时任务清理过期key、内存淘汰时被调用
  *
  * @param dbid 命令执行所在的db
  * @param argv 命令参数
@@ -3331,6 +3349,14 @@ static void propagateNow(int dbid, robj **argv, int argc, int target) {
  * so it is up to the caller to release the passed argv (but it is usually
  * stack allocated).  The function automatically increments ref count of
  * passed objects, so the caller does not need to. */
+/**
+ * 将命令保存到 server.also_propagate，方便命令传播
+ *
+ * @param dbid 命令执行的db
+ * @param argv 参数
+ * @param argc 参数数量
+ * @param target 传播目标，包括 PROPAGATE_NONE 0、PROPAGATE_AOF 1、PROPAGATE_REPL 2
+ */
 void alsoPropagate(int dbid, robj **argv, int argc, int target) {
     robj **argvcopy;
     int j;
@@ -3401,6 +3427,12 @@ void updateCommandLatencyHistogram(struct hdr_histogram **latency_histogram, int
 /* Handle the alsoPropagate() API to handle commands that want to propagate
  * multiple separated commands. Note that alsoPropagate() is not affected
  * by CLIENT_PREVENT_PROP flag. */
+/**
+ * 命令传播
+ *
+ * 命令执行、扫描清理过期key、淘汰key，都会调用该函数进行命令传播
+ * 需要传播的命令存储在server.also_propagate中
+ */
 void propagatePendingCommands() {
     if (server.also_propagate.numops == 0)
         return;
@@ -3426,6 +3458,7 @@ void propagatePendingCommands() {
         transaction = 0;
     }
 
+    // 如果开启了事务
     if (transaction) {
         /* We use the first command-to-propagate to set the dbid for MULTI,
          * so that the SELECT will be propagated beforehand */
@@ -3433,9 +3466,11 @@ void propagatePendingCommands() {
         propagateNow(multi_dbid,&shared.multi,1,PROPAGATE_AOF|PROPAGATE_REPL);
     }
 
+    // 传播 server.also_propagate 中存储的所有操作
     for (j = 0; j < server.also_propagate.numops; j++) {
         rop = &server.also_propagate.ops[j];
         serverAssert(rop->target);
+        // 立即传播命令
         propagateNow(rop->dbid,rop->argv,rop->argc,rop->target);
     }
 
@@ -3445,6 +3480,7 @@ void propagatePendingCommands() {
         propagateNow(exec_dbid,&shared.exec,1,PROPAGATE_AOF|PROPAGATE_REPL);
     }
 
+    // 清理 server.also_propagate 中存储的命令操作
     redisOpArrayFree(&server.also_propagate);
 }
 
@@ -3649,6 +3685,8 @@ void call(client *c, int flags) {
             updateCommandLatencyHistogram(&(real_cmd->latency_histogram), duration*1000);
     }
 
+    // 命令传播
+
     /* Propagate the command into the AOF and replication link.
      * We never propagate EXEC explicitly, it will be implicitly
      * propagated if needed (see propagatePendingCommands).
@@ -3682,6 +3720,7 @@ void call(client *c, int flags) {
         /* Call alsoPropagate() only if at least one of AOF / replication
          * propagation is needed. */
         if (propagate_flags != PROPAGATE_NONE)
+            // 将命令操作保存到 server.also_propagate 中，后续的 afterCommand() 方法在进行命令传播会从 server.also_propagate 取命令
             alsoPropagate(c->db->id,c->argv,c->argc,propagate_flags);
     }
 
@@ -3717,7 +3756,7 @@ void call(client *c, int flags) {
         server.stat_peak_memory = zmalloc_used;
 
     /* Do some maintenance job and cleanup */
-    // 命令执行后的一些维护清理工作
+    // 命令执行后的一些维护清理工作，如传播命令给AOF、SLAVE
     afterCommand(c);
 
     /* Client pause takes effect after a transaction has finished. This needs
@@ -3769,6 +3808,11 @@ void rejectCommandFormat(client *c, const char *fmt, ...) {
 }
 
 /* This is called after a command in call, we can do some maintenance job in it. */
+/**
+ * 命令执行完毕的一些后续操作
+ *
+ * @param c 客户端
+ */
 void afterCommand(client *c) {
     UNUSED(c);
     if (!server.in_nested_call) {
@@ -3776,6 +3820,7 @@ void afterCommand(client *c) {
          * Should be done before trackingHandlePendingKeyInvalidations so that we
          * reply to client before invalidating cache (makes more sense) */
         if (server.core_propagates)
+            // 传播命令给AOF、SLAVE
             propagatePendingCommands();
         /* Flush pending invalidation messages only when we are not in nested call.
          * So the messages are not interleaved with transaction response. */
@@ -3858,7 +3903,8 @@ uint64_t getCommandFlags(client *c) {
  * if C_ERR is returned the client was destroyed (i.e. after QUIT). */
 /**
  * 客户端命令执行
- * @param c
+ *
+ * @param c 客户端
  * @return
  */
 int processCommand(client *c) {
@@ -4020,7 +4066,13 @@ int processCommand(client *c) {
      * the event loop since there is a busy Lua script running in timeout
      * condition, to avoid mixing the propagation of scripts with the
      * propagation of DELs due to eviction. */
+    // 如果设置了内存上限，检查内存占用，key的淘汰就在这里触发
     if (server.maxmemory && !isInsideYieldingLongCommand()) {
+        /*
+         * 检查内存占用会否超过了最大限制，如果内存充足，继续执行命令
+         * 如果内存占用超过限制，尝试淘汰部分key释放内存，释放后内存足够则继续执行命令
+         * 释放后内存仍然不足则拒绝执行命令
+         */
         int out_of_memory = (performEvictions() == EVICT_FAIL);
 
         /* performEvictions may evict keys, so we need flush pending tracking
@@ -4047,6 +4099,7 @@ int processCommand(client *c) {
             reject_cmd_on_oom = 1;
         }
 
+        // 内存溢出，根据配置决定是否拒绝命令
         if (out_of_memory && reject_cmd_on_oom) {
             rejectCommand(c, shared.oomerr);
             return C_OK;
@@ -4204,7 +4257,7 @@ int processCommand(client *c) {
         queueMultiCommand(c, cmd_flags);
         addReply(c,shared.queued);
     } else {
-        // 不在事务中，直接执行并写入AOF和慢查询日志，以及维护一些统计信息
+        // 不在事务中，直接执行并传播命令到AOF和Slave，记录慢查询日志，以及维护一些统计信息
         call(c,CMD_CALL_FULL);
         c->woff = server.master_repl_offset;
         if (listLength(server.ready_keys) && !isInsideYieldingLongCommand())
@@ -6609,7 +6662,9 @@ int redisFork(int purpose) {
 
     int childpid;
     long long start = ustime();
+    // 调用平台库函数fork子进程，父子进程代码从这里开始分叉执行
     if ((childpid = fork()) == 0) {
+        // fork() 函数对子进程返回的pid==0，因此子进程执行以下代码后，回到调用函数中继续从原函数往下执行
         /* Child.
          *
          * The order of setting things up follows some reasoning:
@@ -6628,6 +6683,7 @@ int redisFork(int purpose) {
         if (server.child_info_pipe[0] != -1)
             close(server.child_info_pipe[0]);
     } else {
+        // fork() 函数对父进程返回的pid > 0，因此父进程执行以下代码后，回到调用函数中继续从原函数往下执行
         /* Parent */
         if (childpid == -1) {
             int fork_errno = errno;
@@ -6770,9 +6826,12 @@ int checkForSentinelMode(int argc, char **argv, char *exec_name) {
 }
 
 /* Function called at startup to load RDB or AOF file in memory. */
+/**
+ * 从磁盘的持久化文件恢复数据到内存
+ */
 void loadDataFromDisk(void) {
     long long start = ustime();
-    // aof功能开，优先从aof文件加载数据
+    // 开启了aof功能，优先从aof文件加载数据
     if (server.aof_state == AOF_ON) {
         // 依次处理aof文件清单中的文件
         int ret = loadAppendOnlyFiles(server.aof_manifest);
@@ -6792,6 +6851,7 @@ void loadDataFromDisk(void) {
             createReplicationBacklog();
             rdb_flags |= RDBFLAGS_FEED_REPL;
         }
+        // 加载rdb
         if (rdbLoad(server.rdb_filename,&rsi,rdb_flags) == C_OK) {
             serverLog(LL_NOTICE,"DB loaded from disk: %.3f seconds",
                 (float)(ustime()-start)/1000000);
@@ -7356,7 +7416,7 @@ int main(int argc, char **argv) {
         moduleInitModulesSystemLast();
         moduleLoadFromQueue();
         ACLLoadUsersAtStartup();
-        // server初始化的一些后续操作，包括一些后台线程的创建，BioJob任务线程，IO线程等
+        // server初始化的一些后续操作，包括一些后台线程的创建，Background I/O Job任务线程，IO线程等
         InitServerLast();
         // 加载aof配置清单，可能会存在基础aof、增量aof、历史aof等多个aof文件，通过清单管理
         aofLoadManifestFromDisk();

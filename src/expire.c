@@ -51,11 +51,22 @@
  *
  * The parameter 'now' is the current time in milliseconds as is passed
  * to the function to avoid too many gettimeofday() syscalls. */
+/**
+ * 删除并将删除命令操作加入 server.also_propagate
+ *
+ * @param db key所在的db
+ * @param de 要删除的元素
+ * @param now 当前时间
+ * @return
+ */
 int activeExpireCycleTryExpire(redisDb *db, dictEntry *de, long long now) {
+    // key 的过期时间
     long long t = dictGetSignedIntegerVal(de);
+    // 如果过期，删除
     if (now > t) {
         sds key = dictGetKey(de);
         robj *keyobj = createStringObject(key,sdslen(key));
+        // 删除，并将命令操作加入 server.also_propagate
         deleteExpiredKeyAndPropagate(db,keyobj);
         decrRefCount(keyobj);
         return 1;
@@ -298,7 +309,7 @@ void activeExpireCycle(int type) {
                         de = de->next;
 
                         ttl = dictGetSignedIntegerVal(e)-now;
-                        // 清除过期key，过期key数量+1
+                        // 清除过期key，过期key数量+1，并且将删除的命令操作加入到 server.also_propagate 中
                         if (activeExpireCycleTryExpire(db,e,now)) expired++;
                         if (ttl > 0) {
                             /* We want the average TTL of keys yet

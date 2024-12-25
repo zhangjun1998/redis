@@ -258,10 +258,11 @@ static int connSocketAccept(connection *conn, ConnectionCallbackFunc accept_hand
  * loop.
  */
 /**
- * 设置客户端cfd的AE_WRITABLE事件处理
+ * 注册客户端cfd的AE_WRITABLE事件
+ * 注意事件处理函数为CT_Socket.connSocketEventHandler()
  *
  * @param conn 客户端连接
- * @param func 事件处理函数
+ * @param func 事件处理函数，并不直接处理事件，而是被事件处理函数connSocketEventHandler()调用
  * @param barrier
  * @return
  */
@@ -277,7 +278,7 @@ static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc fu
     if (!conn->write_handler)
         aeDeleteFileEvent(server.el,conn->fd,AE_WRITABLE);
     else
-        // 为cfd注册AE_WRITABLE事件
+        // 为cfd注册AE_WRITABLE事件，注意事件处理函数为 CT_Socket.connSocketEventHandler()函数
         if (aeCreateFileEvent(server.el,conn->fd,AE_WRITABLE,
                     conn->type->ae_handler,conn) == AE_ERR) return C_ERR;
     return C_OK;
@@ -287,10 +288,13 @@ static int connSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc fu
  * If NULL, the existing handler is removed.
  */
 /**
- * 为clientFd注册AE_READABLE事件的回调函数，也就是readQueryFromClient()
+ * 设置客户端的读事件处理函数readQueryFromClient()
+ * 内部会为clientFd注册AE_READABLE事件，并设置事件处理函数为CT_Socket->ae_handler，即 connSocketEventHandler()
+ * 当有AE_READABLE事件发生时，调用connSocketEventHandler()，其内部会调用readQueryFromClient()进行事件处理
+ * 也就是说，connSocketEventHandler()只是作为一个事件处理函数的分发器，根据不同事件调用不同处理函数
  *
  * @param conn 客户端连接
- * @param func AE_READABLE事件处理函数
+ * @param func AE_READABLE事件的回调函数
  * @return
  */
 static int connSocketSetReadHandler(connection *conn, ConnectionCallbackFunc func) {
@@ -301,7 +305,7 @@ static int connSocketSetReadHandler(connection *conn, ConnectionCallbackFunc fun
     if (!conn->read_handler)
         aeDeleteFileEvent(server.el,conn->fd,AE_READABLE);
     else
-        // 为cfd注册AE_READABLE事件
+        // 为cfd注册AE_READABLE事件，并设置事件处理函数为CT_Socket->ae_handler
         if (aeCreateFileEvent(server.el,conn->fd,
                     AE_READABLE,conn->type->ae_handler,conn) == AE_ERR) return C_ERR;
     return C_OK;
@@ -311,6 +315,15 @@ static const char *connSocketGetLastError(connection *conn) {
     return strerror(conn->last_errno);
 }
 
+
+/**
+ * 客户端事件处理器，客户端事件的统一处理入口，内部根据事件类型调用不同处理函数
+ *
+ * @param el 事件驱动器
+ * @param fd 事件关联的fd
+ * @param clientData 关联的客户端信息
+ * @param mask 事件类型 AE_READABLE、AE_WRITEABLE
+ */
 static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask)
 {
     UNUSED(el);
@@ -345,16 +358,19 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
      * This is useful when, for instance, we want to do things
      * in the beforeSleep() hook, like fsync'ing a file to disk,
      * before replying to a client. */
+    // 如果读写事件同时发生，需要先处理AE_READABLE事件，后处理AE_WRITEABLE事件
     int invert = conn->flags & CONN_FLAG_WRITE_BARRIER;
 
     int call_write = (mask & AE_WRITABLE) && conn->write_handler;
     int call_read = (mask & AE_READABLE) && conn->read_handler;
 
     /* Handle normal I/O flows */
+    // AE_READABLE事件的处理，调用 conn 的 read_handler 处理函数，即readQueryFromClient()
     if (!invert && call_read) {
         if (!callHandler(conn, conn->read_handler)) return;
     }
     /* Fire the writable event. */
+    // AE_WRITEABLE事件的处理，调用 conn 的 write_handler 处理函数，即
     if (call_write) {
         if (!callHandler(conn, conn->write_handler)) return;
     }
@@ -407,19 +423,20 @@ static int connSocketGetType(connection *conn) {
 
 // 客户端连接类型，TCP => CT_Socket
 ConnectionType CT_Socket = {
+    // 客户端事件处理器，根据读写事件分别调用 conn->read_handler、conn->write_handler
     .ae_handler = connSocketEventHandler,
     .close = connSocketClose,
-    // 客户端socket写，发送数据到客户端
+    // 客户端socket写，内部调用标准库函数将数据发送给客户端socket
     .write = connSocketWrite,
     .writev = connSocketWritev,
-    // 客户端socket读
+    // 客户端socket读，内部调用标准库函数从客户端socket读取数据
     .read = connSocketRead,
 
     .accept = connSocketAccept,
     .connect = connSocketConnect,
-    // 设置cfd的writeHandler，会注册AE_WRITEABLE事件到cfd，并设置事件处理函数为connSocketSetWriteHandler
+    // 作为cfd的writeHandler，当事件类型为AE_WRITEABLE时，会被ae_handler调用
     .set_write_handler = connSocketSetWriteHandler,
-    // 设置cfd的readHandler，会注册AE_READABLE事件到cfd，并设置事件处理函数为connSocketSetReadHandler
+    // 作为cfd的writeHandler，当事件类型为AE_READABLE时，会被ae_handler调用
     .set_read_handler = connSocketSetReadHandler,
     .get_last_error = connSocketGetLastError,
     .blocking_connect = connSocketBlockingConnect,

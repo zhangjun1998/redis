@@ -1671,19 +1671,19 @@ struct redisServer {
     int aof_rewrite_perc;           /* Rewrite AOF if % growth is > M and... */
     off_t aof_rewrite_min_size;     /* the AOF file is at least N bytes. */
     off_t aof_rewrite_base_size;    /* AOF size on latest startup or rewrite. */
-    off_t aof_current_size;         /* AOF current size (Including BASE + INCRs). */
-    off_t aof_last_incr_size;       /* The size of the latest incr AOF. */
+    off_t aof_current_size;         // aof文件当前大小 /* AOF current size (Including BASE + INCRs). */
+    off_t aof_last_incr_size;       // 最后一次正确的aof文件位置偏移量 /* The size of the latest incr AOF. */
     off_t aof_last_incr_fsync_offset; /* AOF offset which is already requested to be synced to disk.
                                        * Compare with the aof_last_incr_size. */
     int aof_flush_sleep;            /* Micros to sleep before flush. (used by tests) */
     int aof_rewrite_scheduled;      /* Rewrite once BGSAVE terminates. */
-    sds aof_buf;      // aof输出缓冲区 /* AOF buffer, written before entering the event loop */
-    int aof_fd;       // aof文件描述符 /* File descriptor of currently selected AOF file */
-    int aof_selected_db; /* Currently selected DB in AOF */
+    sds aof_buf;                    // aof输出缓冲区 /* AOF buffer, written before entering the event loop */
+    int aof_fd;                     // aof文件描述符 /* File descriptor of currently selected AOF file */
+    int aof_selected_db;            // aof当前选择的db /* Currently selected DB in AOF */
     time_t aof_flush_postponed_start; /* UNIX time of postponed AOF flush */
-    time_t aof_last_fsync;            /* UNIX time of last fsync() */
-    time_t aof_rewrite_time_last;   /* Time used by last AOF rewrite run. */
-    time_t aof_rewrite_time_start;  /* Current AOF rewrite start time. */
+    time_t aof_last_fsync;          // 最后一次执行fsync()的时间  /* UNIX time of last fsync() */
+    time_t aof_rewrite_time_last;   // 上次aof重写耗时 /* Time used by last AOF rewrite run. */
+    time_t aof_rewrite_time_start;  // aof执行重写的开始时间 /* Current AOF rewrite start time. */
     time_t aof_cur_timestamp;       /* Current record timestamp in AOF */
     int aof_timestamp_enabled;      /* Enable record timestamp in AOF */
     int aof_lastbgrewrite_status;   /* C_OK or C_ERR */
@@ -1738,7 +1738,7 @@ struct redisServer {
     int child_info_pipe[2];         /* Pipe used to write the child_info_data. */
     int child_info_nread;           /* Num of bytes of the last read from pipe */
     /* Propagation of commands in AOF / replication */
-    redisOpArray also_propagate;    // 需要传播给AOF和slave的命令数组，实现持久化和主从复制 /* Additional command to propagate. */
+    redisOpArray also_propagate;    // 需要传播给AOF和slave的命令操作，数组结构，实现持久化和主从复制等 /* Additional command to propagate. */
     int replication_allowed;        /* Are we allowed to replicate? */
     /* Logging */
     char *logfile;                  /* Path of log file */
@@ -1821,7 +1821,7 @@ struct redisServer {
     int get_ack_from_slaves;            /* If true we send REPLCONF GETACK. */
     /* Limits */
     unsigned int maxclients;            /* Max number of simultaneous clients */
-    unsigned long long maxmemory;   /* Max number of memory bytes to use */
+    unsigned long long maxmemory;       // 允许使用的最大内存 /* Max number of memory bytes to use */
     ssize_t maxmemory_clients;       /* Memory limit for total client buffers */
     int maxmemory_policy;           /* Policy for key eviction */
     int maxmemory_samples;          /* Precision of random sampling */

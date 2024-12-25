@@ -190,7 +190,7 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
 }
 
 /**
- * 根据key查询redisObject
+ * 根据key查询redisObject，过期则删除
  *
  * @param c 客户端
  * @param key key
@@ -198,8 +198,9 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
  * @return
  */
 robj *lookupKeyReadOrReply(client *c, robj *key, robj *reply) {
-    // 根据key查询到redisObject
+    // 根据key查询到redisObject，过期则删除
     robj *o = lookupKeyRead(c->db, key);
+
     if (!o) addReplyOrErrorObject(c, reply);
     return o;
 }
@@ -1592,7 +1593,7 @@ long long getExpire(redisDb *db, robj *key) {
 /**
  * 从指定db中删除过期key并传播删除行为给slave和AOF
  *
- * @param db
+ * @param db key所在的数据库
  * @param keyobj key
  */
 void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj) {
@@ -1635,9 +1636,9 @@ void deleteExpiredKeyAndPropagate(redisDb *db, robj *keyobj) {
 /**
  * 传播删除行为
  *
- * @param db
- * @param key
- * @param lazy
+ * @param db key所在db
+ * @param key 被删除的key
+ * @param lazy 是否是延迟删除
  */
 void propagateDeletion(redisDb *db, robj *key, int lazy) {
     robj *argv[2];
@@ -1651,6 +1652,7 @@ void propagateDeletion(redisDb *db, robj *key, int lazy) {
      * Even if module executed a command without asking for propagation. */
     int prev_replication_allowed = server.replication_allowed;
     server.replication_allowed = 1;
+    // 将删除操作保存到 server.also_propagate 中，执行 propagateNow() 方法时会将其中的所有操作传播到 aof 或者 slave
     alsoPropagate(db->id,argv,2,PROPAGATE_AOF|PROPAGATE_REPL);
     server.replication_allowed = prev_replication_allowed;
 
@@ -1732,7 +1734,16 @@ int keyIsExpired(redisDb *db, robj *key) {
  *
  * The return value of the function is 0 if the key is still valid,
  * otherwise the function returns 1 if the key is expired. */
+/**
+ * 若keu过期则删除，并且传播删除命令
+ *
+ * @param db key所在db
+ * @param key 要删除的key
+ * @param flags
+ * @return
+ */
 int expireIfNeeded(redisDb *db, robj *key, int flags) {
+    // 判断key是否过期，没过期则不处理
     if (!keyIsExpired(db,key)) return 0;
 
     /* If we are running in the context of a replica, instead of

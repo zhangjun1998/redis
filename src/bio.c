@@ -61,10 +61,15 @@
 #include "server.h"
 #include "bio.h"
 
+// BIO线程数组，执行 bioProcessBackgroundJobs() 函数
 static pthread_t bio_threads[BIO_NUM_OPS];
+// 互斥锁
 static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
+// 线程阻塞唤醒条件
 static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
 static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
+// BIO任务链表数组，数组的每个元素为一种任务类型链表
+// 三种任务类型：BIO_CLOSE_FILE、BIO_AOF_FSYNC、BIO_LAZY_FREE
 static list *bio_jobs[BIO_NUM_OPS];
 /* The following array is used to hold the number of pending jobs for every
  * OP type. This allows us to export the bioPendingJobsOfType() API that is
@@ -72,6 +77,7 @@ static list *bio_jobs[BIO_NUM_OPS];
  * objects shared with the background thread. The main thread will just wait
  * that there are no longer jobs of this type to be executed before performing
  * the sensible operation. This data is also useful for reporting. */
+// 每种类型任务的待处理数量
 static unsigned long long bio_pending[BIO_NUM_OPS];
 
 /* This structure represents a background Job. It is only used locally to this
@@ -124,6 +130,7 @@ void bioInit(void) {
      * responsible of. */
     for (j = 0; j < BIO_NUM_OPS; j++) {
         void *arg = (void*)(unsigned long) j;
+        // 创建线程
         if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
             serverLog(LL_WARNING,"Fatal: Can't initialize Background Jobs.");
             exit(1);
@@ -133,10 +140,15 @@ void bioInit(void) {
 }
 
 void bioSubmitJob(int type, bio_job *job) {
+    // 加锁
     pthread_mutex_lock(&bio_mutex[type]);
+    // 添加任务到对应的任务链表
     listAddNodeTail(bio_jobs[type],job);
+    // 该类型任务数量+1
     bio_pending[type]++;
+    // 发送信号，唤醒任务类型对应的处理线程，线程继续执行任务，即 bioProcessBackgroundJobs() 函数
     pthread_cond_signal(&bio_newjob_cond[type]);
+    // 解锁
     pthread_mutex_unlock(&bio_mutex[type]);
 }
 
@@ -164,14 +176,16 @@ void bioCreateCloseJob(int fd, int need_fsync) {
 }
 
 void bioCreateFsyncJob(int fd) {
+    // 创建任务
     bio_job *job = zmalloc(sizeof(*job));
     job->fd_args.fd = fd;
-
+    // 提交任务
     bioSubmitJob(BIO_AOF_FSYNC, job);
 }
 
 /**
- * BIO后台线程执行的任务
+ * BIO线程执行的任务
+ * AOF刷盘、laze_free延迟删除
  *
  * @param arg
  * @return
@@ -188,6 +202,7 @@ void *bioProcessBackgroundJobs(void *arg) {
         return NULL;
     }
 
+    // 根据任务类型设置线程名称
     switch (type) {
     case BIO_CLOSE_FILE:
         redis_set_thread_title("bio_close_file");
@@ -200,10 +215,12 @@ void *bioProcessBackgroundJobs(void *arg) {
         break;
     }
 
+    // 设置CPU亲和性
     redisSetCpuAffinity(server.bio_cpulist);
 
     makeThreadKillable();
 
+    // 加锁
     pthread_mutex_lock(&bio_mutex[type]);
     /* Block SIGALRM so we are sure that only the main thread will
      * receive the watchdog signal. */
@@ -217,27 +234,33 @@ void *bioProcessBackgroundJobs(void *arg) {
         listNode *ln;
 
         /* The loop always starts with the lock hold. */
+        // 所有任务执行完毕，在条件上阻塞等待，等待下次唤醒
         if (listLength(bio_jobs[type]) == 0) {
             pthread_cond_wait(&bio_newjob_cond[type],&bio_mutex[type]);
             continue;
         }
+
         /* Pop the job from the queue. */
+        // 取出任务链表的第一个任务
         ln = listFirst(bio_jobs[type]);
         job = ln->value;
         /* It is now possible to unlock the background system as we know have
          * a stand alone job structure to process.*/
+        // 解锁
         pthread_mutex_unlock(&bio_mutex[type]);
 
         /* Process the job accordingly to its type. */
+        // 处理不同类型的任务
         if (type == BIO_CLOSE_FILE) {
             if (job->fd_args.need_fsync) {
                 redis_fsync(job->fd_args.fd);
             }
             close(job->fd_args.fd);
-        } else if (type == BIO_AOF_FSYNC) {
+        } else if (type == BIO_AOF_FSYNC) { // AOF刷盘任务
             /* The fd may be closed by main thread and reused for another
              * socket, pipe, or file. We just ignore these errno because
              * aof fsync did not really fail. */
+            // 调用对应平台的库函数进行刷盘
             if (redis_fsync(job->fd_args.fd) == -1 &&
                 errno != EBADF && errno != EINVAL)
             {
@@ -252,7 +275,7 @@ void *bioProcessBackgroundJobs(void *arg) {
             } else {
                 atomicSet(server.aof_bio_fsync_status,C_OK);
             }
-        } else if (type == BIO_LAZY_FREE) {
+        } else if (type == BIO_LAZY_FREE) { // 延迟删除任务
             job->free_args.free_fn(job->free_args.free_args);
         } else {
             serverPanic("Wrong job type in bioProcessBackgroundJobs().");
@@ -262,7 +285,9 @@ void *bioProcessBackgroundJobs(void *arg) {
         /* Lock again before reiterating the loop, if there are no longer
          * jobs to process we'll block again in pthread_cond_wait(). */
         pthread_mutex_lock(&bio_mutex[type]);
+        // 移除节点
         listDelNode(bio_jobs[type],ln);
+        // 待处理任务数量减1
         bio_pending[type]--;
 
         /* Unblock threads blocked on bioWaitStepOfType() if any. */

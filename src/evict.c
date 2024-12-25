@@ -142,7 +142,6 @@ void evictionPoolAlloc(void) {
  * We insert keys on place in ascending order, so keys with the smaller
  * idle time are on the left, and keys with the higher idle time on the
  * right. */
-
 void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evictionPoolEntry *pool) {
     int j, k, count;
     dictEntry *samples[server.maxmemory_samples];
@@ -537,12 +536,20 @@ static unsigned long evictionTimeLimitUs() {
  *   EVICT_RUNNING  - memory is over the limit, but eviction is still processing
  *   EVICT_FAIL     - memory is over the limit, and there's nothing to evict
  * */
+/**
+ * 内存淘汰
+ * 每次执行命令时会调用该方法进行内存检查，如果内存占用超过阈值则触发内存淘汰
+ * 会将key的删除命令进行传播
+ *
+ * @return
+ */
 int performEvictions(void) {
     /* Note, we don't goto update_metrics here because this check skips eviction
      * as if it wasn't triggered. it's a fake EVICT_OK. */
     if (!isSafeToPerformEvictions()) return EVICT_OK;
 
     int keys_freed = 0;
+    // mem_tofree为需要释放的内存，计算方式为mem_used减去server.maxmemory
     size_t mem_reported, mem_tofree;
     long long mem_freed; /* May be negative */
     mstime_t latency, eviction_latency;
@@ -550,11 +557,13 @@ int performEvictions(void) {
     int slaves = listLength(server.slaves);
     int result = EVICT_FAIL;
 
+    // 获取内存状态，判断是否超出了阈值
     if (getMaxmemoryState(&mem_reported,NULL,&mem_tofree,NULL) == C_OK) {
         result = EVICT_OK;
         goto update_metrics;
     }
 
+    // 如果没有设置淘汰策略，不进行淘汰
     if (server.maxmemory_policy == MAXMEMORY_NO_EVICTION) {
         result = EVICT_FAIL;  /* We need to free memory, but policy forbids. */
         goto update_metrics;
@@ -576,6 +585,7 @@ int performEvictions(void) {
     server.core_propagates = 1;
     server.propagate_no_multi = 1;
 
+    // 死循环释放内存，直到释放的内存总大小达到目标
     while (mem_freed < (long long)mem_tofree) {
         int j, k, i;
         static unsigned int next_db = 0;
@@ -584,6 +594,9 @@ int performEvictions(void) {
         redisDb *db;
         dict *dict;
         dictEntry *de;
+
+        // 按照不同淘汰策略淘汰key，每个策略具体是如何实现的就先不看了
+        // 所有的淘汰策略都将删除操作加入到了 server.also_propagate 中
 
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
@@ -749,6 +762,7 @@ cant_free:
     serverAssert(server.core_propagates); /* This function should not be re-entrant */
 
     /* Propagate all DELs */
+    // 传播 server.also_propagate 中的所有命令操作
     propagatePendingCommands();
 
     server.core_propagates = prev_core_propagates;

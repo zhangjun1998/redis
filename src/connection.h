@@ -75,16 +75,16 @@ typedef struct ConnectionType {
 } ConnectionType;
 
 struct connection {
-    ConnectionType *type;
+    ConnectionType *type; // 连接类型，一般类型为 CT_Socket
     ConnectionState state;
     short int flags;
     short int refs;
     int last_errno;
     void *private_data; // 关联的客户端client
     ConnectionCallbackFunc conn_handler;
-    ConnectionCallbackFunc write_handler;
-    ConnectionCallbackFunc read_handler;
-    int fd;
+    ConnectionCallbackFunc write_handler; // 客户端AE_WRITEABLE事件的实际处理函数，被 (CT_Socket)type->connSocketEventHandler()调用
+    ConnectionCallbackFunc read_handler; // 客户端AE_READABLE事件的实际处理函数，被 (CT_Socket)type->connSocketEventHandler()调用
+    int fd; // 客户端文件描述符
 };
 
 /* The connection module does not deal with listening and accepting sockets,

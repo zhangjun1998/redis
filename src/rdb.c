@@ -1463,6 +1463,14 @@ werr:
     return C_ERR;
 }
 
+/**
+ * fork子进程进行后台保存rdb
+ *
+ * @param req
+ * @param filename rdb文件存储路径
+ * @param rsi
+ * @return
+ */
 int rdbSaveBackground(int req, char *filename, rdbSaveInfo *rsi) {
     pid_t childpid;
 
@@ -2882,9 +2890,11 @@ done:
 
 /* Load an RDB file from the rio stream 'rdb'. On success C_OK is returned,
  * otherwise C_ERR is returned and 'errno' is set accordingly. */
+// rdb数据加载
 int rdbLoadRio(rio *rdb, int rdbflags, rdbSaveInfo *rsi) {
     functionsLibCtx* functions_lib_ctx = functionsLibCtxGetCurrent();
     rdbLoadingCtx loading_ctx = { .dbarray = server.db, .functions_lib_ctx = functions_lib_ctx };
+    // 加载
     int retval = rdbLoadRioWithLoadingCtx(rdb,rdbflags,rsi,&loading_ctx);
     return retval;
 }
@@ -2905,13 +2915,16 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
 
     rdb->update_cksum = rdbLoadProgressCallback;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+    // 读取redis版本
     if (rioRead(rdb,buf,9) == 0) goto eoferr;
     buf[9] = '\0';
+    // 验证是否以REDIS开头
     if (memcmp(buf,"REDIS",5) != 0) {
         serverLog(LL_WARNING,"Wrong signature trying to load DB from file");
         errno = EINVAL;
         return C_ERR;
     }
+    // 验证版本，必须大于等于1，且低于当前版本
     rdbver = atoi(buf+5);
     if (rdbver < 1 || rdbver > RDB_VERSION) {
         serverLog(LL_WARNING,"Can't handle RDB format version %d",rdbver);
@@ -2923,15 +2936,17 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     long long lru_idle = -1, lfu_freq = -1, expiretime = -1, now = mstime();
     long long lru_clock = LRU_CLOCK();
 
+    // 开始读取
     while(1) {
         sds key;
         robj *val;
 
         /* Read type. */
+        // 读取当前行的类型
         if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
 
         /* Handle special types. */
-        if (type == RDB_OPCODE_EXPIRETIME) {
+        if (type == RDB_OPCODE_EXPIRETIME) { // 秒级过期时间
             /* EXPIRETIME: load an expire associated with the next key
              * to load. Note that after loading an expire we need to
              * load the actual type, and continue. */
@@ -2939,7 +2954,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             expiretime *= 1000;
             if (rioGetReadError(rdb)) goto eoferr;
             continue; /* Read next opcode. */
-        } else if (type == RDB_OPCODE_EXPIRETIME_MS) {
+        } else if (type == RDB_OPCODE_EXPIRETIME_MS) { // 毫秒级过期时间
             /* EXPIRETIME_MS: milliseconds precision expire times introduced
              * with RDB v3. Like EXPIRETIME but no with more precision. */
             expiretime = rdbLoadMillisecondTime(rdb,rdbver);
@@ -2957,10 +2972,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             if ((qword = rdbLoadLen(rdb,NULL)) == RDB_LENERR) goto eoferr;
             lru_idle = qword;
             continue; /* Read next opcode. */
-        } else if (type == RDB_OPCODE_EOF) {
+        } else if (type == RDB_OPCODE_EOF) { // RDB文件结束符
             /* EOF: End of file, exit the main loop. */
             break;
-        } else if (type == RDB_OPCODE_SELECTDB) {
+        } else if (type == RDB_OPCODE_SELECTDB) { // 选择切换DB
             /* SELECTDB: Select the specified database. */
             if ((dbid = rdbLoadLen(rdb,NULL)) == RDB_LENERR) goto eoferr;
             if (dbid >= (unsigned)server.dbnum) {
@@ -3109,10 +3124,13 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             continue;
         }
 
+
         /* Read key */
+        // 读取key
         if ((key = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL)) == NULL)
             goto eoferr;
         /* Read value */
+        // 读取value
         val = rdbLoadObject(type,rdb,key,db->id,&error);
 
         /* Check if the key already expired. This function is used when loading
@@ -3123,6 +3141,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
          * Similarly, if the base AOF is RDB format, we want to load all 
          * the keys they are, since the log of operations in the incr AOF 
          * is assumed to work in the exact keyspace state. */
+        // value为NULL，忽略
         if (val == NULL) {
             /* Since we used to have bug that could lead to empty keys
              * (See #8453), we rather not fail when empty key is encountered
@@ -3140,6 +3159,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             !(rdbflags&RDBFLAGS_AOF_PREAMBLE) &&
             expiretime != -1 && expiretime < now)
         {
+            // 过期数据，忽略
             if (rdbflags & RDBFLAGS_FEED_REPL) {
                 /* Caller should have created replication backlog,
                  * and now this path only works when rebooting,
@@ -3156,10 +3176,12 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             decrRefCount(val);
             server.rdb_last_load_keys_expired++;
         } else {
+            // 处理
             robj keyobj;
             initStaticStringObject(keyobj,key);
 
             /* Add the new object in the hash table */
+            // 将key,value加入指定db中
             int added = dbAddRDBLoad(db,key,val);
             server.rdb_last_load_keys_loaded++;
             if (!added) {
@@ -3177,6 +3199,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             }
 
             /* Set the expire time if needed */
+            // 如果存在过期时间，设置
             if (expiretime != -1) {
                 setExpire(NULL,db,&keyobj,expiretime);
             }
@@ -3262,6 +3285,7 @@ int rdbLoad(char *filename, rdbSaveInfo *rsi, int rdbflags) {
     startLoadingFile(sb.st_size, filename, rdbflags);
     rioInitWithFile(&rdb,fp);
 
+    // 加载数据
     retval = rdbLoadRio(&rdb,rdbflags,rsi);
 
     fclose(fp);
